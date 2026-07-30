@@ -1,0 +1,163 @@
+# hugmesh-remote-fragment — multi-replica nginx static fleet + a Spring-Native
+# sync sidecar that pulls the ENABLED module-federation FRAGMENT bundles from the
+# federation manifest/bundles API and serves them STATICALLY (content-addressed,
+# immutable, cacheable) for the host's loadRemoteModule. NO per-request proxy to
+# federation (the static bytes are cacheable + the fleet is horizontally scalable
+# / HPA-able). RBAC/visibility stays enforced at the gateway/federation layer; the
+# federation manifest only emits enabled + circuit-closed + visible modules, so a
+# disabled/removed fragment simply drops out and stops being served (kill-switch).
+#
+# Pod shape (mirrors the host web nginx + the admin-bff Spring conventions):
+#   initContainer  sync (SYNC_MODE=once) — first full sync so nginx starts WITH
+#                  content (gated readiness until the bundles are present).
+#   container web  — stock nginxinc/nginx-unprivileged, listens :8080, serves the
+#                  shared emptyDir nginx root, nginx.conf from a ConfigMap.
+#   container sync — first-party Spring-Native sync service (SYNC_MODE=loop):
+#                  re-polls the manifest, writes new contentHash paths, prunes the
+#                  old ones; actuator on :8081 (nginx owns :8080 in the pod).
+# Both runtime containers + the init share the `bundles` emptyDir at the nginx
+# root, so the sidecar writes the bytes nginx reads.
+#
+# Repo: github.com/hugmesh-net/hugmesh-remote-fragment (the sync image;
+# the nginx image is the public nginxinc/nginx-unprivileged, NOT rewritten).
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  name: hugmesh-remote-fragment
+  namespace: hugmesh-frontend
+  labels: { app: hugmesh-remote-fragment, app.kubernetes.io/part-of: hugmesh.systems }
+spec:
+  # >=2 replicas: stateless static servers of the current enabled-fragment set.
+  # The HPA (hpa.yaml) owns scaling above this floor; replicas:2 is a static floor
+  # that works even before metrics-server is installed (see hpa.yaml note).
+  replicas: 2
+  selector: { matchLabels: { app: hugmesh-remote-fragment } }
+  template:
+    metadata: { labels: { app: hugmesh-remote-fragment } }
+    spec:
+      nodeSelector: { hugmesh.systems/frontend: "true" }
+      securityContext:
+        runAsNonRoot: true
+        runAsUser: 1000
+        seccompProfile: { type: RuntimeDefault }
+        seLinuxOptions:
+          # Fresh MCS level: host web c40, matrix c41, mastodon c42, login c43,
+          # admin-ui c44 — this fleet takes c45 (next free in the frontend range).
+          type: container_t
+          level: "s0:c45"
+      # First full sync BEFORE nginx serves, so the static container never comes up
+      # empty. Reads the same federation creds + target dir as the loop sidecar.
+      initContainers:
+        - name: sync-init
+          image: hugmesh-systems/hugmesh-remote-fragment:dev
+          securityContext:
+            allowPrivilegeEscalation: false
+            readOnlyRootFilesystem: true
+            capabilities: { drop: ["ALL"] }
+          env:
+            - { name: SYNC_MODE, value: "once" }
+            - { name: SERVER_PORT, value: "8081" }
+            - { name: SYNC_TARGET_DIR, value: "/usr/share/nginx/html" }
+            - name: FEDERATION_BASE_URL
+              value: "http://hugmesh-federation-api.hugmesh-backend.svc.cluster.local:8080"
+            - name: CASDOOR_TOKEN_URL
+              value: "http://casdoor.hugmesh-pki.svc.cluster.local:8000/api/login/oauth/access_token"
+            - { name: CASDOOR_ORG, value: "hugmesh" }
+            - name: CASDOOR_CLIENT_ID
+              valueFrom: { secretKeyRef: { name: fragment-sync-casdoor, key: clientId } }
+            - name: CASDOOR_CLIENT_SECRET
+              valueFrom: { secretKeyRef: { name: fragment-sync-casdoor, key: clientSecret } }
+          resources:
+            requests: { cpu: 50m, memory: 128Mi }
+            limits:   { cpu: 500m, memory: 256Mi }
+          volumeMounts:
+            - { name: bundles, mountPath: /usr/share/nginx/html }
+            - { name: tmp, mountPath: /tmp }
+      containers:
+        - name: web
+          # Pinned tag (was untagged => floating :latest). NIST 800-190 §4.3,
+          # CIS Docker 4.x. Matches the binhost nginx-unprivileged pin.
+          image: nginxinc/nginx-unprivileged:1.27-alpine
+          ports: [{ name: http, containerPort: 8080 }]
+          securityContext:
+            allowPrivilegeEscalation: false
+            readOnlyRootFilesystem: true
+            capabilities: { drop: ["ALL"] }
+          readinessProbe: { httpGet: { path: /healthz, port: http }, initialDelaySeconds: 5 }
+          livenessProbe:  { httpGet: { path: /healthz, port: http }, initialDelaySeconds: 10, periodSeconds: 15 }
+          resources: { requests: { cpu: 50m, memory: 96Mi }, limits: { cpu: 300m, memory: 192Mi } }
+          volumeMounts:
+            - { name: nginx-conf, mountPath: /etc/nginx/conf.d, readOnly: true }
+            - { name: bundles,    mountPath: /usr/share/nginx/html }
+            # nginx-unprivileged + readOnlyRootFilesystem needs writable cache/run/tmp.
+            - { name: nginx-cache, mountPath: /var/cache/nginx }
+            - { name: nginx-run,   mountPath: /tmp }
+        - name: sync
+          image: hugmesh-systems/hugmesh-remote-fragment:dev
+          ports: [{ name: actuator, containerPort: 8081 }]
+          securityContext:
+            allowPrivilegeEscalation: false
+            readOnlyRootFilesystem: true
+            capabilities: { drop: ["ALL"] }
+          env:
+            # Loop mode: re-poll the manifest, write new contentHash paths, prune old.
+            - { name: SYNC_MODE, value: "loop" }
+            - { name: SERVER_PORT, value: "8081" }
+            - { name: SYNC_TARGET_DIR, value: "/usr/share/nginx/html" }
+            # The federation registry/bundle API this fleet syncs FROM (backend ns).
+            - name: FEDERATION_BASE_URL
+              value: "http://hugmesh-federation-api.hugmesh-backend.svc.cluster.local:8080"
+            # Casdoor client-credentials token mint (machine account app-fragment-sync).
+            # The minted RS256 JWT is validated by federation's resource server
+            # (issuer https://id.hugmesh.systems); manifest+bundles need only the
+            # authenticated/ROLE_USER floor a client-credentials token carries, so it
+            # sees the PUBLIC fragments. (Bind app-fragment-sync to a ROLE_INTERNAL-
+            # mapping role in casdoor init-data IF internal fragments must sync.)
+            - name: CASDOOR_TOKEN_URL
+              value: "http://casdoor.hugmesh-pki.svc.cluster.local:8000/api/login/oauth/access_token"
+            - { name: CASDOOR_ORG, value: "hugmesh" }
+            - name: CASDOOR_CLIENT_ID
+              valueFrom: { secretKeyRef: { name: fragment-sync-casdoor, key: clientId } }
+            - name: CASDOOR_CLIENT_SECRET
+              valueFrom: { secretKeyRef: { name: fragment-sync-casdoor, key: clientSecret } }
+          readinessProbe:
+            httpGet: { path: /actuator/health/readiness, port: actuator }
+            initialDelaySeconds: 20
+            periodSeconds: 10
+          livenessProbe:
+            httpGet: { path: /actuator/health/liveness, port: actuator }
+            initialDelaySeconds: 45
+            periodSeconds: 15
+          resources:
+            requests: { cpu: 50m, memory: 128Mi }
+            limits:   { cpu: 500m, memory: 256Mi }
+          volumeMounts:
+            - { name: bundles, mountPath: /usr/share/nginx/html }
+            - { name: tmp, mountPath: /tmp }
+      volumes:
+        - name: nginx-conf
+          configMap: { name: remote-fragment-nginx }
+        # Ephemeral content-addressed mirror of the enabled-fragment set; the init
+        # container fills it before nginx starts, the loop sidecar keeps it fresh,
+        # and it is re-synced from scratch on every pod (re)start.
+        - name: bundles
+          emptyDir: {}
+        - name: nginx-cache
+          emptyDir: {}
+        - name: nginx-run
+          emptyDir: {}
+        - name: tmp
+          emptyDir: {}
+---
+# ClusterIP — reachable only through the fe-gateway's /_fragments/** route (the
+# gateway is the RBAC/visibility enforcement point; this fleet just serves bytes).
+apiVersion: v1
+kind: Service
+metadata:
+  name: hugmesh-remote-fragment
+  namespace: hugmesh-frontend
+  labels: { app: hugmesh-remote-fragment }
+spec:
+  type: ClusterIP
+  selector: { app: hugmesh-remote-fragment }
+  ports: [{ name: http, port: 80, targetPort: http }]

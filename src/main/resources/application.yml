@@ -1,0 +1,52 @@
+spring:
+  application:
+    name: hugmesh-remote-fragment
+
+# The federation API this fleet pulls the ENABLED fragment bundles FROM. Cross
+# namespace: federation lives in hugmesh-backend; this fleet runs in
+# hugmesh-frontend. Override with FEDERATION_BASE_URL.
+federation:
+  base-url: "${FEDERATION_BASE_URL:http://hugmesh-federation-api.hugmesh-backend.svc.cluster.local:8080}"
+
+sync:
+  # The shared nginx root the co-located nginx container serves. Bundles land at
+  # <target-dir>/_fragments/<slug>/<contentHash>/... and index.json at
+  # <target-dir>/_fragments/index.json. In-pod this is the shared emptyDir mounted
+  # at /usr/share/nginx/html by both containers.
+  target-dir: "${SYNC_TARGET_DIR:/usr/share/nginx/html}"
+  # once  = init-container one-shot full sync then exit 0 (nginx starts with content)
+  # loop  = long-running sidecar; re-sync every sync.interval
+  mode: "${SYNC_MODE:loop}"
+  # Re-sync cadence in loop mode (ISO-8601 duration).
+  interval: "${SYNC_INTERVAL:PT60S}"
+
+casdoor:
+  # Client-credentials mint of the SERVICE JWT the federation resource server
+  # requires. token-url is the in-cluster Casdoor (systems realm) OAuth token
+  # endpoint. client-secret comes from the fragment-sync-casdoor k8s Secret
+  # (ESO -> Vault secret/hugmesh/fragment-sync property client_secret).
+  token-url: "${CASDOOR_TOKEN_URL:http://casdoor.hugmesh-pki.svc.cluster.local:8000/api/login/oauth/access_token}"
+  client-id: "${CASDOOR_CLIENT_ID:app-fragment-sync}"
+  client-secret: "${CASDOOR_CLIENT_SECRET:}"
+
+management:
+  endpoints:
+    web:
+      exposure:
+        include: health,info
+  endpoint:
+    health:
+      probes:
+        enabled: true
+      # Membership: the first-sync indicator gates READINESS only (a federation
+      # outage must not kill the pod via liveness — it keeps serving last-good).
+      group:
+        readiness:
+          include: readinessState,firstSync
+        liveness:
+          include: livenessState
+
+server:
+  # The sync service exposes ONLY actuator. In-pod it must NOT collide with the
+  # nginx container on 8080, so it listens on 8081 (overridable via SERVER_PORT).
+  port: "${SERVER_PORT:8081}"

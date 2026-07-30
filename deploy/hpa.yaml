@@ -1,0 +1,27 @@
+# HorizontalPodAutoscaler for the remote-fragment static fleet. The whole point
+# of the SYNC-AND-SERVE-STATIC decision is horizontal scalability: the pods are
+# stateless static servers of the current enabled-fragment set, so they scale out
+# cleanly under load (each pod re-syncs the immutable bundles on start).
+#
+# NOTE — this is the FIRST HPA in the cluster (no metrics-server Application exists
+# in apps/ today). It REQUIRES metrics-server (a later wave). Until metrics-server
+# is installed the HPA stays inert and the Deployment's replicas:2 floor governs;
+# once metrics-server lands this HPA owns scaling from 2 up to 6 on CPU.
+apiVersion: autoscaling/v2
+kind: HorizontalPodAutoscaler
+metadata:
+  name: hugmesh-remote-fragment
+  namespace: hugmesh-frontend
+  labels: { app: hugmesh-remote-fragment, app.kubernetes.io/part-of: hugmesh.systems }
+spec:
+  scaleTargetRef:
+    apiVersion: apps/v1
+    kind: Deployment
+    name: hugmesh-remote-fragment
+  minReplicas: 2
+  maxReplicas: 6
+  metrics:
+    - type: Resource
+      resource:
+        name: cpu
+        target: { type: Utilization, averageUtilization: 70 }

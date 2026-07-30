@@ -1,0 +1,92 @@
+# HugMesh CI — build + push this repo's TWO container images to the in-cluster
+# GitLab container registry. The GitHub repo is pull-mirrored into in-cluster
+# GitLab (mirror_trigger_builds=true), so this runs on push / mirror-sync on the
+# privileged x86 runner (shell executor with docker, matching the generator CI).
+# Images carry NO keys — the Casdoor client_secret is supplied at runtime from the
+# fragment-sync-casdoor Secret (ESO -> Vault), never baked in.
+#
+# This repo produces two images for ONE pod:
+#   - $CI_REGISTRY_IMAGE      (the Spring-Native reactive sync sidecar; root Dockerfile)
+#   - $CI_REGISTRY_IMAGE/nginx (the static nginx server; nginx/Dockerfile)
+# The kustomize image rewrite (specs/cluster/manifests/remote-fragment) tracks the
+# first-party sync image at :main; nginx uses the public nginxinc/nginx-unprivileged
+# by default, but this nginx image is published for sites that prefer to pin the
+# conf into an image rather than a ConfigMap.
+
+# Pull in the centralized OWASP pen-test stage (hidden .pentest-* jobs) from the
+# generator repo so this repo's pipeline gets the single-source-of-truth SCA +
+# authenticated-ZAP DAST harness (probes + nuclei). The thin pentest:* jobs below
+# `extends:` those hidden jobs. See memory hugmesh-pentest-standard.
+include:
+  - project: 'HugMesh/hugmesh-generator'
+    ref: main
+    file: '/tests/pentest/ci/pentest-stage.gitlab-ci.yml'
+
+stages: [test, build, pentest]
+
+test:
+  stage: test
+  tags: [hugmesh-x86, privileged]
+  rules:
+    - if: '$CI_COMMIT_BRANCH == $CI_DEFAULT_BRANCH'
+    - if: '$CI_PIPELINE_SOURCE == "merge_request_event"'
+    - if: '$CI_COMMIT_TAG'
+  script:
+    - docker run --rm -v "${CI_PROJECT_DIR}:/workspace:ro" -w /workspace eclipse-temurin:25-jdk-noble ./mvnw verify -B
+  artifacts:
+    when: always
+    reports:
+      junit: target/surefire-reports/TEST-*.xml
+    paths:
+      - target/surefire-reports/
+    expire_in: 7 days
+
+build:sync:
+  stage: build
+  needs: [test]
+  tags: [hugmesh-x86, privileged]
+  rules:
+    - if: '$CI_COMMIT_BRANCH == $CI_DEFAULT_BRANCH'
+    - if: '$CI_COMMIT_TAG'
+  script:
+    - echo "$CI_REGISTRY_PASSWORD" | docker login -u "$CI_REGISTRY_USER" --password-stdin "$CI_REGISTRY"
+    # Immutable tag = release tag or git SHA; plus a moving branch tag the deploy/
+    # kustomize can track for dev.
+    - export TAG="${CI_COMMIT_TAG:-$CI_COMMIT_SHORT_SHA}"
+    - docker build --pull -t "$CI_REGISTRY_IMAGE:$TAG" -t "$CI_REGISTRY_IMAGE:$CI_COMMIT_REF_SLUG" .
+    - docker push "$CI_REGISTRY_IMAGE:$TAG"
+    - docker push "$CI_REGISTRY_IMAGE:$CI_COMMIT_REF_SLUG"
+
+build:nginx:
+  stage: build
+  needs: [test]
+  tags: [hugmesh-x86, privileged]
+  rules:
+    - if: '$CI_COMMIT_BRANCH == $CI_DEFAULT_BRANCH'
+    - if: '$CI_COMMIT_TAG'
+  script:
+    - echo "$CI_REGISTRY_PASSWORD" | docker login -u "$CI_REGISTRY_USER" --password-stdin "$CI_REGISTRY"
+    - export TAG="${CI_COMMIT_TAG:-$CI_COMMIT_SHORT_SHA}"
+    - docker build --pull -t "$CI_REGISTRY_IMAGE/nginx:$TAG" -t "$CI_REGISTRY_IMAGE/nginx:$CI_COMMIT_REF_SLUG" nginx
+    - docker push "$CI_REGISTRY_IMAGE/nginx:$TAG"
+    - docker push "$CI_REGISTRY_IMAGE/nginx:$CI_COMMIT_REF_SLUG"
+
+# -----------------------------------------------------------------------------
+# OWASP pen-test stage — thin jobs that extend the centralized hidden jobs from
+# the generator's pentest-stage.gitlab-ci.yml (included above). allow_failure so
+# a finding never blocks the build/image jobs; rules mirror this repo's existing
+# security-job rules (default branch + merge requests).
+# -----------------------------------------------------------------------------
+pentest:sca:
+  extends: .pentest-sca
+  allow_failure: true
+  rules:
+    - if: '$CI_COMMIT_BRANCH == $CI_DEFAULT_BRANCH'
+    - if: '$CI_PIPELINE_SOURCE == "merge_request_event"'
+
+pentest:dast:
+  extends: .pentest-dast-baseline
+  allow_failure: true
+  rules:
+    - if: '$CI_COMMIT_BRANCH == $CI_DEFAULT_BRANCH'
+    - if: '$CI_PIPELINE_SOURCE == "merge_request_event"'

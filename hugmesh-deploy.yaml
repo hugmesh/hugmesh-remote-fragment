@@ -1,0 +1,36 @@
+# hugmesh-deploy.yaml — per-repo deploy descriptor (Phase 6 catalog).
+#
+# Discovered by the catalog ApplicationSet (hugmesh-generator
+# specs/cluster/apps/13-service-catalog.yaml): its scmProvider gitea generator
+# scans the in-cluster Forgejo org for repos carrying THIS file + a `deploy/`
+# kustomize dir and generates one ArgoCD Application (source path: deploy/).
+#
+# DUAL-HOME / SHIPS DARK: the central manifest still lives at
+# hugmesh-generator specs/cluster/manifests/remote-fragment/ and remains the
+# authoritative source today. This file + deploy/ are a Forgejo-cutover step:
+# the live GitHub-rooted ArgoCD ignores it, and the (currently unseeded) Forgejo
+# catalog matches nothing, so it changes nothing running. deploy/ is a verbatim
+# copy of the central manifest — keep the two in sync until cutover.
+#
+# NOTE: the deploy/ kustomize also materializes the nginx config (nginx.conf ->
+# ConfigMap remote-fragment-nginx via configMapGenerator, disableNameSuffixHash)
+# exactly as the central manifest does. ONLY the first-party sync image is rewritten
+# to the GitLab registry; the static container stays on public nginxinc/nginx-
+# unprivileged:1.27-alpine (not rewritten), so this repo's image: coord below names
+# the sync image, which is the repo's own first-party artifact.
+name: hugmesh-remote-fragment  # Application name
+namespace: hugmesh-frontend    # target k8s namespace (existing tier ns)
+image: hugmesh-systems/hugmesh-remote-fragment # the first-party SYNC image (tag pinned in deploy/ kustomize)
+port: 80                       # Service port (Service :80 -> container http :8080)
+replicas: 2                    # static floor; HPA (deploy/hpa.yaml) scales 2..6
+# Gateway route the admin/BFF seeds into the routing DB (Phase 2 core). The fleet
+# is ClusterIP-only and reached in-cluster solely via the fe-gateway's
+# /_fragments/** route; the gateway/federation layer is the RBAC/visibility
+# enforcement point (this fleet just serves the immutable content-addressed bytes).
+# NOTE: `gateway:` names the OTHER (fe-gateway) service's own
+# `spring.application.name` / `gateway_route_access` identity key — a live
+# Postgres-stored value owned by that repo, not renamed here (see PR description).
+route:
+  gateway: hugmesh-fe-gateway
+  path: /_fragments/**
+  stripPrefix: 0

@@ -1,0 +1,210 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<project xmlns="http://maven.apache.org/POM/4.0.0"
+         xmlns:xsi="http://www.w3.org/2001/XMLSchema-instance"
+         xsi:schemaLocation="http://maven.apache.org/POM/4.0.0 http://maven.apache.org/xsd/maven-4.0.0.xsd">
+  <modelVersion>4.0.0</modelVersion>
+  <parent>
+    <groupId>org.springframework.boot</groupId>
+    <artifactId>spring-boot-starter-parent</artifactId>
+    <!-- 4.0.7 brings this service onto the rest of the hugmesh Java fleet's
+         Boot-4 baseline (the fleet runs Spring Boot 4.0.7 via hugmesh-parent
+         2.7.0; this standalone client tracks the same Boot version directly).
+         Proven WebFlux + reactive WebClient + GraalVM native on Java 25. This
+         service is a pure reactive CLIENT (it mints a Casdoor service token and
+         pulls from the federation API); it has NO database, so none of admin-bff's
+         r2dbc/liquibase/jdbc/cassandra/kafka/eureka deps.
+
+         Boot-4 note: the WebFlux JSON codec is now Jackson 3 (tools.jackson),
+         pulled transitively by spring-boot-starter-webflux. The Casdoor token
+         mint therefore decodes the response into a Map (DTO-free, Jackson-major
+         agnostic) rather than a Jackson-2 JsonNode, and the federation manifest /
+         bundle records bind by exact component name through the Jackson-3 codec.
+
+         Stays on spring-boot-starter-parent DIRECTLY rather than adopting
+         hugmesh-parent (metapom) as this <parent>: see the hugmesh-commons
+         dependency comment below for the live-verified reason (the metapom's shared
+         <dependencies> block inherits spring-security/oauth2-resource-server/r2dbc/
+         postgresql/liquibase onto every child, which for THIS DB-less,
+         security-filter-less machine client auto-locks every non-actuator-health/info
+         path behind a random generated HTTP Basic password and silently adds an
+         unrequested SpringDoc/Swagger surface — a real behaviour change out of scope
+         for a build/dependency uplift). Boot version already matches the fleet
+         (4.0.7), so there is no version gap to close on the parent itself. -->
+    <version>4.0.7</version>
+    <relativePath/>
+  </parent>
+  <groupId>systems.hugmesh</groupId>
+  <artifactId>remote-fragment</artifactId>
+  <version>0.2.0</version>
+  <properties>
+    <java.version>25</java.version>
+  </properties>
+  <dependencies>
+    <!-- Reactive web (WebFlux) — the reactive WebClient this service uses to mint
+         the Casdoor service JWT and pull the federation manifest + bundle files.
+         The platform standard is ALWAYS reactive; blocking file IO (writing the
+         synced bundle bytes to the nginx root) is offloaded to
+         Schedulers.boundedElastic so the event loop never blocks. -->
+    <dependency><groupId>org.springframework.boot</groupId><artifactId>spring-boot-starter-webflux</artifactId></dependency>
+    <!-- Actuator health probes. readiness only flips true after the FIRST
+         successful manifest sync (a custom HealthIndicator), so k8s holds traffic
+         off the nginx sidecar until there is content to serve. -->
+    <dependency><groupId>org.springframework.boot</groupId><artifactId>spring-boot-starter-actuator</artifactId></dependency>
+
+    <!-- Jackson 2 databind — used DIRECTLY (not via the WebFlux codec) by
+         FragmentSyncService to parse a bundle's manifestJson STRING (mapper.readTree)
+         and to serialise index.json. Under Boot 4 the webflux starter no longer pulls
+         jackson-databind transitively (the reactive JSON codec moved to Jackson 3 /
+         tools.jackson), so this is declared explicitly. The version is managed by the
+         Boot 4 dependency BOM (2.20.x) — a dependency-only restoration of the direct
+         ObjectMapper API, NOT a Jackson-3 behaviour migration. (The fleet likewise keeps
+         a Jackson-2 ObjectMapper alongside the Jackson-3 codec for ad-hoc string parsing
+         — e.g. admin-bff's LegacyJacksonObjectMapperConfig — though there Jackson-2
+         databind arrives transitively via webauthn4j rather than as an explicit dep; this
+         service has no such transitive source once the webflux starter drops it, hence
+         the explicit declaration here.) -->
+    <dependency><groupId>com.fasterxml.jackson.core</groupId><artifactId>jackson-databind</artifactId></dependency>
+
+    <!-- NO database (no r2dbc / liquibase / jdbc / postgresql / cassandra),
+         NO kafka, NO eureka, NO spring-cloud, NO oauth2-resource-server: this is
+         a one-direction CLIENT. The Casdoor service JWT is minted with a
+         hand-rolled reactive WebClient client_credentials POST (the established
+         platform pattern — hugmesh.games BFF / admin-bff CasdoorClient style),
+         so spring-boot-starter-oauth2-client is intentionally omitted too. -->
+
+    <!-- hugmesh-commons — the shared org library dependency the rest of the
+         fleet (federation-api, admin-bff, user-bff) consumes via hugmesh-parent's
+         dependencyManagement. This service does NOT adopt hugmesh-parent as its
+         Maven <parent> (see the note above the <parent> block): TRIALED here and
+         reverted — the metapom's shared <dependencies> block is written for the
+         reactive-BFF baseline and is inherited LITERALLY (Maven parent <dependencies>,
+         not just dependencyManagement) by every child, so parenting on it pulled in
+         spring-boot-starter-security + oauth2-resource-server (which, with no
+         SecurityConfig/issuer-uri here, auto-locks every non-actuator-health/info path
+         behind a random per-instance HTTP Basic password — verified live: a plain
+         GET to an arbitrary path went from unauthenticated to 401 with a
+         WWW-Authenticate challenge) plus r2dbc/postgresql/liquibase runtime deps and an
+         unrequested SpringDoc/Swagger surface — a real behaviour + dependency-footprint
+         change for a repo whose own design is explicitly DB-less and security-filter-less
+         (see above), which is out of scope for a build/dependency uplift.
+
+         hugmesh-commons ITSELF parents on hugmesh-parent and so carries that SAME
+         shared <dependencies> block transitively (verified: `mvn dependency:tree` shows
+         spring-boot-starter-security / -oauth2-resource-server / -data-r2dbc /
+         r2dbc-postgresql / postgresql / liquibase-core / spring-boot-liquibase riding in
+         on the commons jar even with THIS repo's own parent unchanged) — so depending on
+         it plainly reproduces the identical failure mode one layer down: `mvn test`
+         failed context-load with "Failed to determine a suitable R2DBC Connection URL"
+         (R2dbcAutoConfiguration eagerly builds a ConnectionFactory bean once
+         spring-boot-starter-data-r2dbc + a driver are on the classpath, and this service
+         configures no spring.r2dbc.* — by design, it has no database). The <exclusions>
+         below strip exactly the transitive artifacts that caused that failure (+ the
+         security/oauth2-resource-server pair that would otherwise auto-lock every path,
+         per the parent-adoption trial above) so this service gets ONLY the commons
+         classes (its Casdoor/security/config helpers), none of the reactive-BFF
+         baseline's DB/security footprint it was never designed to carry. Version is
+         pinned explicitly (no parent-managed dependencyManagement here) — 2.0.0 is the
+         REAL published commons coordinate (see user-bff-api's pom.xml comment on the
+         same point); hugmesh-parent's own dependencyManagement entry for it is also
+         2.0.0 despite the metapom's OWN version being 2.7.0. Currently unused by any
+         class here — this service has no security/tenancy code to migrate onto commons'
+         CasdoorAuthorities/DomainRegistry/Roles (unlike federation-api/admin-bff/user-bff,
+         it is a pure machine-account HTTP client with no resource-server surface); added
+         purely for fleet-artifact alignment per the README's recorded uplift plan. -->
+    <dependency>
+      <groupId>systems.hugmesh</groupId>
+      <artifactId>hugmesh-commons</artifactId>
+      <version>2.0.0</version>
+      <exclusions>
+        <exclusion>
+          <groupId>org.springframework.boot</groupId>
+          <artifactId>spring-boot-starter-security</artifactId>
+        </exclusion>
+        <exclusion>
+          <groupId>org.springframework.boot</groupId>
+          <artifactId>spring-boot-starter-oauth2-resource-server</artifactId>
+        </exclusion>
+        <exclusion>
+          <groupId>org.springframework.boot</groupId>
+          <artifactId>spring-boot-starter-data-r2dbc</artifactId>
+        </exclusion>
+        <exclusion>
+          <groupId>org.postgresql</groupId>
+          <artifactId>r2dbc-postgresql</artifactId>
+        </exclusion>
+        <exclusion>
+          <groupId>org.postgresql</groupId>
+          <artifactId>postgresql</artifactId>
+        </exclusion>
+        <exclusion>
+          <groupId>org.liquibase</groupId>
+          <artifactId>liquibase-core</artifactId>
+        </exclusion>
+        <exclusion>
+          <groupId>org.springframework.boot</groupId>
+          <artifactId>spring-boot-liquibase</artifactId>
+        </exclusion>
+        <exclusion>
+          <groupId>org.springframework</groupId>
+          <artifactId>spring-jdbc</artifactId>
+        </exclusion>
+        <!-- Also excluded (lower-risk, but still an unrequested surface for this
+             DB-less/security-less client): springdoc would otherwise stand up a
+             publicly-reachable (no security starter here to gate it) /v3/api-docs +
+             Swagger UI for a service with no @RestController to document, and
+             spring-boot-starter-validation pulls in hibernate-validator/tomcat-embed-el
+             for a service with no @Valid-annotated request DTOs. -->
+        <exclusion>
+          <groupId>org.springdoc</groupId>
+          <artifactId>springdoc-openapi-starter-webflux-ui</artifactId>
+        </exclusion>
+        <exclusion>
+          <groupId>org.springframework.boot</groupId>
+          <artifactId>spring-boot-starter-validation</artifactId>
+        </exclusion>
+      </exclusions>
+    </dependency>
+
+    <!-- test -->
+    <dependency><groupId>org.springframework.boot</groupId><artifactId>spring-boot-starter-test</artifactId><scope>test</scope></dependency>
+    <dependency><groupId>io.projectreactor</groupId><artifactId>reactor-test</artifactId><scope>test</scope></dependency>
+  </dependencies>
+  <build><plugins>
+    <plugin>
+      <groupId>org.graalvm.buildtools</groupId>
+      <artifactId>native-maven-plugin</artifactId>
+    </plugin>
+    <plugin>
+      <groupId>org.springframework.boot</groupId>
+      <artifactId>spring-boot-maven-plugin</artifactId>
+    </plugin>
+    <!-- Byte Buddy (via Mockito) only officially supports up to JDK 23; this
+         enables it to run on newer JDKs (the build host runs Temurin 25). A
+         no-op on JDK <=23, so it is safe for the Java 25 target too. Copied
+         verbatim from admin-bff so `./mvnw test` is green on the build host. -->
+    <plugin>
+      <groupId>org.apache.maven.plugins</groupId>
+      <artifactId>maven-surefire-plugin</artifactId>
+      <configuration>
+        <argLine>-Dnet.bytebuddy.experimental=true</argLine>
+      </configuration>
+    </plugin>
+  </plugins></build>
+  <profiles>
+    <!-- Native build: `./mvnw -Pnative native:compile` produces a GraalVM
+         binary. The `native` profile (process-aot + reachability metadata) is
+         defined by spring-boot-starter-parent; this thin local profile mirrors
+         the federation/admin-bff so the same `-Pnative` invocation works. -->
+    <profile>
+      <id>native</id>
+      <build>
+        <plugins>
+          <plugin>
+            <groupId>org.graalvm.buildtools</groupId>
+            <artifactId>native-maven-plugin</artifactId>
+          </plugin>
+        </plugins>
+      </build>
+    </profile>
+  </profiles>
+</project>
