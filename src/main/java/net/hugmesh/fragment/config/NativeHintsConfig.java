@@ -1,13 +1,13 @@
-package systems.hugmesh.fragment.config;
+package net.hugmesh.fragment.config;
 
 import org.springframework.aot.hint.MemberCategory;
 import org.springframework.aot.hint.RuntimeHints;
 import org.springframework.aot.hint.RuntimeHintsRegistrar;
 import org.springframework.context.annotation.Configuration;
 import org.springframework.context.annotation.ImportRuntimeHints;
-import systems.hugmesh.fragment.federation.BundleMetadata;
-import systems.hugmesh.fragment.federation.FederationManifest;
-import systems.hugmesh.fragment.sync.FragmentSyncService;
+import net.hugmesh.fragment.federation.BundleMetadata;
+import net.hugmesh.fragment.federation.FederationManifest;
+import net.hugmesh.fragment.sync.FragmentSyncService;
 
 /**
  * GraalVM native-image / AOT reachability hints for the DTO records

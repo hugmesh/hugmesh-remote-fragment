@@ -1,4 +1,4 @@
-package systems.hugmesh.fragment;
+package net.hugmesh.fragment;
 
 import org.springframework.http.HttpStatus;
 import org.springframework.http.MediaType;

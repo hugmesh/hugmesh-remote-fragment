@@ -3,4 +3,4 @@
  * runner, and health indicator that mirror federation bundles onto
  * the shared nginx volume.
  */
-package systems.hugmesh.fragment.sync;
+package net.hugmesh.fragment.sync;

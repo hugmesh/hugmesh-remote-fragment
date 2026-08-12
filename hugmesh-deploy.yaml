@@ -20,7 +20,7 @@
 # the sync image, which is the repo's own first-party artifact.
 name: hugmesh-remote-fragment  # Application name
 namespace: hugmesh-frontend    # target k8s namespace (existing tier ns)
-image: hugmesh-systems/hugmesh-remote-fragment # the first-party SYNC image (tag pinned in deploy/ kustomize)
+image: hugmesh-net/hugmesh-remote-fragment # the first-party SYNC image (tag pinned in deploy/ kustomize)
 port: 80                       # Service port (Service :80 -> container http :8080)
 replicas: 2                    # static floor; HPA (deploy/hpa.yaml) scales 2..6
 # Gateway route the admin/BFF seeds into the routing DB (Phase 2 core). The fleet

@@ -1,4 +1,4 @@
-package systems.hugmesh.fragment.casdoor;
+package net.hugmesh.fragment.casdoor;
 
 import org.slf4j.Logger;
 import org.slf4j.LoggerFactory;

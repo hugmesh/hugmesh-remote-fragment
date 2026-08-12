@@ -1,4 +1,4 @@
-package systems.hugmesh.fragment;
+package net.hugmesh.fragment;
 
 import org.junit.jupiter.api.Test;
 import org.springframework.http.HttpStatus;
@@ -9,8 +9,8 @@ import org.springframework.web.reactive.function.client.ExchangeFunction;
 import org.springframework.web.reactive.function.client.WebClient;
 import reactor.core.publisher.Mono;
 import reactor.test.StepVerifier;
-import systems.hugmesh.fragment.casdoor.CasdoorTokenClient;
-import systems.hugmesh.fragment.federation.FederationSyncClient;
+import net.hugmesh.fragment.casdoor.CasdoorTokenClient;
+import net.hugmesh.fragment.federation.FederationSyncClient;
 
 import java.util.concurrent.atomic.AtomicBoolean;
 import java.util.concurrent.atomic.AtomicInteger;

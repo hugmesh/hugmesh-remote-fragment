@@ -49,7 +49,7 @@ spec:
       # empty. Reads the same federation creds + target dir as the loop sidecar.
       initContainers:
         - name: sync-init
-          image: hugmesh-systems/hugmesh-remote-fragment:dev
+          image: hugmesh-net/hugmesh-remote-fragment:dev
           securityContext:
             allowPrivilegeEscalation: false
             readOnlyRootFilesystem: true
@@ -93,7 +93,7 @@ spec:
             - { name: nginx-cache, mountPath: /var/cache/nginx }
             - { name: nginx-run,   mountPath: /tmp }
         - name: sync
-          image: hugmesh-systems/hugmesh-remote-fragment:dev
+          image: hugmesh-net/hugmesh-remote-fragment:dev
           ports: [{ name: actuator, containerPort: 8081 }]
           securityContext:
             allowPrivilegeEscalation: false

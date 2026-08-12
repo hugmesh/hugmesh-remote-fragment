@@ -1,4 +1,4 @@
-package systems.hugmesh.fragment;
+package net.hugmesh.fragment;
 
 import com.fasterxml.jackson.databind.JsonNode;
 import com.fasterxml.jackson.databind.ObjectMapper;
@@ -6,10 +6,10 @@ import org.junit.jupiter.api.Test;
 import org.junit.jupiter.api.io.TempDir;
 import org.springframework.web.reactive.function.client.WebClient;
 import reactor.test.StepVerifier;
-import systems.hugmesh.fragment.casdoor.CasdoorTokenClient;
-import systems.hugmesh.fragment.federation.BundleMetadata;
-import systems.hugmesh.fragment.federation.FederationSyncClient;
-import systems.hugmesh.fragment.sync.FragmentSyncService;
+import net.hugmesh.fragment.casdoor.CasdoorTokenClient;
+import net.hugmesh.fragment.federation.BundleMetadata;
+import net.hugmesh.fragment.federation.FederationSyncClient;
+import net.hugmesh.fragment.sync.FragmentSyncService;
 
 import java.nio.file.Files;
 import java.nio.file.Path;

@@ -1,4 +1,4 @@
-package systems.hugmesh.fragment.federation;
+package net.hugmesh.fragment.federation;
 
 import com.fasterxml.jackson.annotation.JsonIgnoreProperties;
 

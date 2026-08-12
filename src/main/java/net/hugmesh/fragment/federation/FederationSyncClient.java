@@ -1,11 +1,11 @@
-package systems.hugmesh.fragment.federation;
+package net.hugmesh.fragment.federation;
 
 import org.springframework.core.io.buffer.DataBuffer;
 import org.springframework.web.reactive.function.client.WebClient;
 import org.springframework.web.reactive.function.client.WebClientResponseException;
 import reactor.core.publisher.Flux;
 import reactor.core.publisher.Mono;
-import systems.hugmesh.fragment.casdoor.CasdoorTokenClient;
+import net.hugmesh.fragment.casdoor.CasdoorTokenClient;
 
 /**
  * Reactive read client for the hugmesh-federation-api

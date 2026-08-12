@@ -1,4 +1,4 @@
-package systems.hugmesh.fragment;
+package net.hugmesh.fragment;
 
 import org.springframework.boot.SpringApplication;
 import org.springframework.boot.autoconfigure.SpringBootApplication;
