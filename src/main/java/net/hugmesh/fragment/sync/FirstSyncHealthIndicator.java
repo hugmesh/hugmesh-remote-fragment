@@ -1,4 +1,4 @@
-package systems.hugmesh.fragment.sync;
+package net.hugmesh.fragment.sync;
 
 import org.springframework.boot.health.contributor.Health;
 import org.springframework.boot.health.contributor.HealthIndicator;

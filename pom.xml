@@ -33,7 +33,7 @@
     <version>4.0.7</version>
     <relativePath/>
   </parent>
-  <groupId>systems.hugmesh</groupId>
+  <groupId>net.hugmesh</groupId>
   <artifactId>remote-fragment</artifactId>
   <version>0.2.0</version>
   <properties>

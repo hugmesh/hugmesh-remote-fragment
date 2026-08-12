@@ -1,4 +1,4 @@
-package systems.hugmesh.fragment.sync;
+package net.hugmesh.fragment.sync;
 
 import com.fasterxml.jackson.databind.JsonNode;
 import com.fasterxml.jackson.databind.ObjectMapper;
@@ -9,9 +9,9 @@ import org.springframework.core.io.buffer.DataBufferUtils;
 import reactor.core.publisher.Flux;
 import reactor.core.publisher.Mono;
 import reactor.core.scheduler.Schedulers;
-import systems.hugmesh.fragment.federation.BundleMetadata;
-import systems.hugmesh.fragment.federation.FederationManifest;
-import systems.hugmesh.fragment.federation.FederationSyncClient;
+import net.hugmesh.fragment.federation.BundleMetadata;
+import net.hugmesh.fragment.federation.FederationManifest;
+import net.hugmesh.fragment.federation.FederationSyncClient;
 
 import java.io.IOException;
 import java.nio.file.Files;

@@ -3,4 +3,4 @@
  * hugmesh-remote-fragment: mints and caches the service JWT
  * used to authenticate against the federation API.
  */
-package systems.hugmesh.fragment.casdoor;
+package net.hugmesh.fragment.casdoor;

@@ -222,7 +222,7 @@ The image carries **no keys**; the client secret is injected at runtime via `sec
 ./mvnw -Pnative native:compile  # GraalVM native binary (the platform standard)
 ```
 
-Maven coordinates: `systems.hugmesh:remote-fragment:0.2.0`. Java 25, Spring Boot 4.0.7, WebFlux + reactive WebClient, no database. The native profile, the `native-maven-plugin`, and `NativeHintsConfig` mirror the same pattern used by `hugmesh-federation-api` and the platform's other reactive Java services.
+Maven coordinates: `net.hugmesh:remote-fragment:0.2.0`. Java 25, Spring Boot 4.0.7, WebFlux + reactive WebClient, no database. The native profile, the `native-maven-plugin`, and `NativeHintsConfig` mirror the same pattern used by `hugmesh-federation-api` and the platform's other reactive Java services.
 
 This repo builds two container images for one pod:
 

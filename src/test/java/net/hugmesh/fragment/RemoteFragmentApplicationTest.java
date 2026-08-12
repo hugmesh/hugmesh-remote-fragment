@@ -1,12 +1,12 @@
-package systems.hugmesh.fragment;
+package net.hugmesh.fragment;
 
 import org.junit.jupiter.api.Test;
 import org.springframework.beans.factory.annotation.Autowired;
 import org.springframework.boot.test.context.SpringBootTest;
-import systems.hugmesh.fragment.casdoor.CasdoorTokenClient;
-import systems.hugmesh.fragment.federation.FederationSyncClient;
-import systems.hugmesh.fragment.sync.FragmentSyncRunner;
-import systems.hugmesh.fragment.sync.FragmentSyncService;
+import net.hugmesh.fragment.casdoor.CasdoorTokenClient;
+import net.hugmesh.fragment.federation.FederationSyncClient;
+import net.hugmesh.fragment.sync.FragmentSyncRunner;
+import net.hugmesh.fragment.sync.FragmentSyncService;
 
 import static org.assertj.core.api.Assertions.assertThat;
 

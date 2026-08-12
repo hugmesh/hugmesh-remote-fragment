@@ -1,13 +1,13 @@
-package systems.hugmesh.fragment.config;
+package net.hugmesh.fragment.config;
 
 import org.springframework.beans.factory.annotation.Value;
 import org.springframework.context.ApplicationContext;
 import org.springframework.context.annotation.Bean;
 import org.springframework.context.annotation.Configuration;
-import systems.hugmesh.fragment.casdoor.CasdoorTokenClient;
-import systems.hugmesh.fragment.federation.FederationSyncClient;
-import systems.hugmesh.fragment.sync.FragmentSyncRunner;
-import systems.hugmesh.fragment.sync.FragmentSyncService;
+import net.hugmesh.fragment.casdoor.CasdoorTokenClient;
+import net.hugmesh.fragment.federation.FederationSyncClient;
+import net.hugmesh.fragment.sync.FragmentSyncRunner;
+import net.hugmesh.fragment.sync.FragmentSyncService;
 
 import java.nio.file.Path;
 import java.time.Duration;

@@ -4,4 +4,4 @@
  * manifest, bundle metadata, and bundle files from the
  * hugmesh-federation-api service.
  */
-package systems.hugmesh.fragment.federation;
+package net.hugmesh.fragment.federation;
