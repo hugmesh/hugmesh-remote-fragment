@@ -1,6 +1,6 @@
 # hugmesh-remote-fragment — static nginx server image.
 #
-# Models the hugmesh.systems host web container's run stage, but WITHOUT the
+# Models the hugmesh.net host web container's run stage, but WITHOUT the
 # Angular build: this server has NO baked content. Its document root is a shared
 # emptyDir the sync sidecar populates at runtime (the SYNC-AND-SERVE-STATIC
 # decision), so the image is just stock nginx-unprivileged + our conf.

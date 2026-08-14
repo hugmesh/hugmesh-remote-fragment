@@ -25,7 +25,7 @@ kind: Deployment
 metadata:
   name: hugmesh-remote-fragment
   namespace: hugmesh-frontend
-  labels: { app: hugmesh-remote-fragment, app.kubernetes.io/part-of: hugmesh.systems }
+  labels: { app: hugmesh-remote-fragment, app.kubernetes.io/part-of: hugmesh.net }
 spec:
   # >=2 replicas: stateless static servers of the current enabled-fragment set.
   # The HPA (hpa.yaml) owns scaling above this floor; replicas:2 is a static floor
@@ -35,7 +35,7 @@ spec:
   template:
     metadata: { labels: { app: hugmesh-remote-fragment } }
     spec:
-      nodeSelector: { hugmesh.systems/frontend: "true" }
+      nodeSelector: { hugmesh.net/frontend: "true" }
       securityContext:
         runAsNonRoot: true
         runAsUser: 1000
@@ -109,7 +109,7 @@ spec:
               value: "http://hugmesh-federation-api.hugmesh-backend.svc.cluster.local:8080"
             # Casdoor client-credentials token mint (machine account app-fragment-sync).
             # The minted RS256 JWT is validated by federation's resource server
-            # (issuer https://id.hugmesh.systems); manifest+bundles need only the
+            # (issuer https://id.hugmesh.net); manifest+bundles need only the
             # authenticated/ROLE_USER floor a client-credentials token carries, so it
             # sees the PUBLIC fragments. (Bind app-fragment-sync to a ROLE_INTERNAL-
             # mapping role in casdoor init-data IF internal fragments must sync.)

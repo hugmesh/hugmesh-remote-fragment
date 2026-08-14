@@ -102,19 +102,28 @@
          security/oauth2-resource-server pair that would otherwise auto-lock every path,
          per the parent-adoption trial above) so this service gets ONLY the commons
          classes (its Casdoor/security/config helpers), none of the reactive-BFF
-         baseline's DB/security footprint it was never designed to carry. Version is
-         pinned explicitly (no parent-managed dependencyManagement here) — 2.0.0 is the
-         REAL published commons coordinate (see user-bff-api's pom.xml comment on the
-         same point); hugmesh-parent's own dependencyManagement entry for it is also
-         2.0.0 despite the metapom's OWN version being 2.7.0. Currently unused by any
+         baseline's DB/security footprint it was never designed to carry.
+
+         COORDINATE: net.hugmesh (hugmesh.net reversed) is the org-wide Java/Maven
+         groupId; the previous reverse-domain spelling is banned org-wide.
+         hugmesh-commons moved first and now publishes ONLY as
+         net.hugmesh:hugmesh-commons. There is no commons artifact at all under the
+         old 2.0.0 version — the coordinate this pom used to name never resolved on
+         either groupId (only .lastUpdated failure markers exist for it), so this is
+         a fix to a dependency that was already dead, not just a rename.
+
+         Version is pinned explicitly (no parent-managed dependencyManagement here,
+         since this repo does not parent on hugmesh-parent) — 2.1.0 is the REAL
+         published commons artifact and is exactly what hugmesh-parent 2.8.0 manages
+         via <hugmesh-commons.version>, so this pin tracks the fleet. Unused by any
          class here — this service has no security/tenancy code to migrate onto commons'
          CasdoorAuthorities/DomainRegistry/Roles (unlike federation-api/admin-bff/user-bff,
          it is a pure machine-account HTTP client with no resource-server surface); added
          purely for fleet-artifact alignment per the README's recorded uplift plan. -->
     <dependency>
-      <groupId>systems.hugmesh</groupId>
+      <groupId>net.hugmesh</groupId>
       <artifactId>hugmesh-commons</artifactId>
-      <version>2.0.0</version>
+      <version>2.1.0</version>
       <exclusions>
         <exclusion>
           <groupId>org.springframework.boot</groupId>

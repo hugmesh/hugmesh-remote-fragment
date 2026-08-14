@@ -17,7 +17,7 @@ generatorOptions:
   disableNameSuffixHash: true
 
 # First-party images now pull from the in-cluster GitLab container registry
-# (registry.hugmesh.systems = the GitLab chart's hosts.domain default; project
+# (registry.hugmesh.net = the GitLab chart's hosts.domain default; project
 # path = <group>/<repo>). The CI in each repo pushes :<branch> + :<sha>; we track
 # the moving :main here for dev. Pulls need the gitlab-registry imagePullSecret
 # (ESO-materialized, see manifests/external-secrets). ONLY the first-party sync
