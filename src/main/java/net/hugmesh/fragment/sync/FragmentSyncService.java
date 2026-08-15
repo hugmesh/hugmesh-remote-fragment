@@ -227,9 +227,11 @@ public class FragmentSyncService {
                 .doOnNext(last::set)
                 .doOnNext(r -> LOG.info(
                         "[sync] done: {} fragment(s) [{} synced,"
-                        + " {} deduped, {} failed], {} pruned",
+                        + " {} deduped, {} skipped, {} failed],"
+                        + " {} pruned",
                         r.fragments(), r.synced(),
-                        r.deduped(), r.failed(), r.pruned()))
+                        r.deduped(), r.skipped(), r.failed(),
+                        r.pruned()))
                 // Log manifest-level failures but do not interfere
                 // with error propagation.
                 .doOnError(e -> LOG.warn(
@@ -298,11 +300,31 @@ public class FragmentSyncService {
             final FederationManifest.Remote remote) {
         String slug = remote.slug();
         String hash = remote.contentHash();
-        if (slug == null || slug.isBlank()
-                || hash == null || hash.isBlank()) {
+        if (slug == null || slug.isBlank()) {
+            // No slug = a malformed manifest entry. Nothing can be
+            // done with it and nothing else will fix it, so this
+            // stays a real, loudly-logged failure.
             LOG.warn("[sync] skipping fragment with missing"
-                    + " slug/contentHash: {}", remote);
+                    + " slug: {}", remote);
             return Mono.just(Outcome.FAILED);
+        }
+        if (hash == null || hash.isBlank()) {
+            // A NULL content hash is NOT an error: it is the
+            // registry's documented "module registered, bundle not
+            // yet synced" state (federation-api changelog
+            // 015-vanity-profile-fragment.xml states it explicitly,
+            // and resolve deliberately returns the descriptor with a
+            // null fragmentPath so a host can tell the two apart).
+            // Counting it as FAILED made a perfectly healthy module
+            // report as a failure and WARN on EVERY 60s tick for the
+            // lifetime of the process — on the local stack that was
+            // half of a permanent "2 fragment(s) [0 synced, 0
+            // deduped, 2 failed]". There is nothing to fetch yet, so
+            // report it as its own outcome, quietly.
+            LOG.debug("[sync] {} has no bundle yet"
+                    + " (content hash unset) — nothing to fetch",
+                    slug);
+            return Mono.just(Outcome.SKIPPED);
         }
         Path dir = bundleDir(slug, hash);
         return dirExists(dir)
@@ -688,6 +710,19 @@ public class FragmentSyncService {
             // Build the slug -> descriptor map in manifest order.
             Map<String, Object> index = new LinkedHashMap<>();
             for (FederationManifest.Remote r : fragments) {
+                if (r.slug() == null || r.slug().isBlank()) {
+                    // The index is keyed BY slug, and Jackson refuses
+                    // to serialise a null map key ("Null key for a
+                    // Map not allowed in JSON"). That exception
+                    // escaped writeIndex and aborted the WHOLE run,
+                    // so one malformed manifest row took down the
+                    // entire sync — every healthy fragment included.
+                    // Such a row is already tallied as FAILED in
+                    // syncFragment and cannot be addressed by a host
+                    // anyway, so it simply does not belong in the
+                    // index.
+                    continue;
+                }
                 Map<String, Object> entry = new LinkedHashMap<>();
                 entry.put("contentHash", r.contentHash());
                 entry.put("version", r.version());
@@ -967,8 +1002,11 @@ public class FragmentSyncService {
                 Outcome.DEDUPED, 0L).intValue();
         int failed  = counts.getOrDefault(
                 Outcome.FAILED,  0L).intValue();
+        int skipped = counts.getOrDefault(
+                Outcome.SKIPPED, 0L).intValue();
         return new SyncResult(
-                fragmentCount, synced, deduped, failed, pruned);
+                fragmentCount, synced, deduped, failed,
+                skipped, pruned);
     }
 
     /**
@@ -984,7 +1022,13 @@ public class FragmentSyncService {
          */
         DEDUPED,
         /** The bundle fetch or write failed; logged and skipped. */
-        FAILED
+        FAILED,
+        /**
+         * The module is registered but carries no content hash yet,
+         * so there is no bundle to fetch. A normal registry state
+         * (see {@code syncFragment}), NOT a failure.
+         */
+        SKIPPED
     }
 
     /**
@@ -999,6 +1043,9 @@ public class FragmentSyncService {
      *                  present on disk
      * @param failed    number of bundles that failed (logged and
      *                  skipped)
+     * @param skipped   number of modules registered without a
+     *                  content hash yet, so there was no bundle to
+     *                  fetch — a normal state, not a failure
      * @param pruned    number of stale bundle directories deleted
      *                  from disk
      */
@@ -1007,5 +1054,6 @@ public class FragmentSyncService {
             int synced,
             int deduped,
             int failed,
+            int skipped,
             int pruned) { }
 }
