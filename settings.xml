@@ -1,0 +1,74 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<!--
+  CONSUMER Maven settings for resolving the PRIVATE net.hugmesh:hugmesh-commons
+  (and hugmesh-parent) artifacts from the org's GitLab project Maven Package Registry.
+
+  HOW THE BUILD FINDS hugmesh-commons (two paths, no secrets in git):
+
+  1. LOCAL DEV / this box: hugmesh-parent + hugmesh-commons are `mvn install`ed
+     into ~/.m2/repository, so a plain `./mvnw test` resolves them from the local
+     repo and NEVER touches this settings.xml's remote repo.
+
+  2. CI / Docker: the artifacts are NOT in the build container's ~/.m2, so Maven
+     falls through to the `gitlab-maven` remote repository declared below. Auth is the
+     GitLab CI_JOB_TOKEN (a short-lived, job-scoped credential GitLab injects as the
+     `CI_JOB_TOKEN` env var) — referenced via ${env.CI_JOB_TOKEN}, so NO secret is
+     ever committed. The registry URL is the GROUP-level endpoint so a child project
+     can resolve a sibling project's (hugmesh-commons') package.
+
+  Run with:   ./mvnw -s settings.xml <goals>
+  In Docker:  the build stage copies this file and passes CI_JOB_TOKEN as a secret.
+-->
+<settings xmlns="http://maven.apache.org/SETTINGS/1.0.0"
+          xmlns:xsi="http://www.w3.org/2001/XMLSchema-instance"
+          xsi:schemaLocation="http://maven.apache.org/SETTINGS/1.0.0
+                              https://maven.apache.org/xsd/settings-1.0.0.xsd">
+
+  <servers>
+    <!-- The credential for the gitlab-maven repository below. In GitLab CI the
+         CI_JOB_TOKEN env var is present; the header auth is what the GitLab Maven
+         registry expects for a CI_JOB_TOKEN. Locally (no env var) this server is
+         simply never consulted because the artifacts already live in ~/.m2. -->
+    <server>
+      <id>gitlab-maven</id>
+      <configuration>
+        <httpHeaders>
+          <property>
+            <name>Job-Token</name>
+            <value>${env.CI_JOB_TOKEN}</value>
+          </property>
+        </httpHeaders>
+      </configuration>
+    </server>
+  </servers>
+
+  <profiles>
+    <profile>
+      <id>gitlab</id>
+      <repositories>
+        <!-- Resolve hugmesh-parent / hugmesh-commons from the org GROUP-level
+             GitLab Maven registry. CI_API_V4_URL + the group id are GitLab CI vars;
+             the GROUP endpoint lets this project pull a sibling project's package.
+             Set GITLAB_GROUP_ID (or hard-pin the HugMesh group id) in CI. -->
+        <repository>
+          <id>gitlab-maven</id>
+          <url>${env.CI_API_V4_URL}/groups/${env.GITLAB_GROUP_ID}/-/packages/maven</url>
+          <releases><enabled>true</enabled></releases>
+          <snapshots><enabled>true</enabled></snapshots>
+        </repository>
+      </repositories>
+      <pluginRepositories>
+        <pluginRepository>
+          <id>gitlab-maven</id>
+          <url>${env.CI_API_V4_URL}/groups/${env.GITLAB_GROUP_ID}/-/packages/maven</url>
+          <releases><enabled>true</enabled></releases>
+          <snapshots><enabled>true</enabled></snapshots>
+        </pluginRepository>
+      </pluginRepositories>
+    </profile>
+  </profiles>
+
+  <activeProfiles>
+    <activeProfile>gitlab</activeProfile>
+  </activeProfiles>
+</settings>
