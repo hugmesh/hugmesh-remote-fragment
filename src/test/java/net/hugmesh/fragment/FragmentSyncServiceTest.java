@@ -45,6 +45,60 @@ class FragmentSyncServiceTest {
                 + "\",\"visibility\":\"public\",\"metadata\":\"{}\"}";
     }
 
+    /** A manifest entry with contentHash JSON-null (the registry's
+     *  "registered, bundle not yet synced" state). */
+    private static String remoteNoHash(String slug) {
+        return "{\"slug\":\"" + slug + "\",\"displayName\":\"" + slug + "\",\"kind\":\"fragment\""
+                + ",\"remoteEntryUrl\":\"http://" + slug + ":8080/fragment\""
+                + ",\"exposedModule\":null,\"version\":\"0.1.0\",\"contentHash\":null"
+                + ",\"visibility\":\"public\",\"metadata\":\"{}\"}";
+    }
+
+    /** A manifest entry with no slug at all — a malformed row. */
+    private static String remoteNoSlug(String hash) {
+        return "{\"slug\":null,\"displayName\":\"nameless\",\"kind\":\"fragment\""
+                + ",\"remoteEntryUrl\":\"/_fragments/x/" + hash + "/remoteEntry.json\""
+                + ",\"exposedModule\":\"./X\",\"version\":\"1.0.0\",\"contentHash\":\"" + hash
+                + "\",\"visibility\":\"public\",\"metadata\":\"{}\"}";
+    }
+
+    @Test
+    void aModuleWithNoContentHashIsSkipped_notCountedAsAFailure(@TempDir Path root) {
+        // THE REGRESSION. federation-api registers a module before its bundle
+        // exists and documents contentHash=null as "registered, bundle not yet
+        // synced" (changelog 015-vanity-profile-fragment.xml). Counting that as
+        // FAILED made a healthy module report as a failure and WARN on every
+        // 60s tick forever — observed on the local stack as a permanent
+        // "2 fragment(s) [0 synced, 0 deduped, 2 failed]".
+        FederationStub stub = new FederationStub();
+        stub.manifestJson = manifest(remoteNoHash("remote-fragment"));
+
+        StepVerifier.create(serviceFor(stub, root).syncOnce())
+                .assertNext(r -> {
+                    assertThat(r.fragments()).isEqualTo(1);
+                    assertThat(r.skipped()).isEqualTo(1);
+                    assertThat(r.failed()).isZero();
+                    assertThat(r.synced()).isZero();
+                })
+                .verifyComplete();
+    }
+
+    @Test
+    void aMalformedEntryWithNoSlugIsStillAFailure(@TempDir Path root) {
+        // The other half of the split: no slug means nothing can ever be done
+        // with the row, so it must stay a loud failure rather than be quietly
+        // absorbed into the new skipped bucket.
+        FederationStub stub = new FederationStub();
+        stub.manifestJson = manifest(remoteNoSlug("dddd4444"));
+
+        StepVerifier.create(serviceFor(stub, root).syncOnce())
+                .assertNext(r -> {
+                    assertThat(r.failed()).isEqualTo(1);
+                    assertThat(r.skipped()).isZero();
+                })
+                .verifyComplete();
+    }
+
     @Test
     void syncsFragments_writesContentAddressedFiles_andSkipsNonFragments(@TempDir Path root) throws Exception {
         FederationStub stub = new FederationStub();
