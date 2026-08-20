@@ -18,7 +18,7 @@
 # authenticated-ZAP DAST harness (probes + nuclei). The thin pentest:* jobs below
 # `extends:` those hidden jobs. See memory hugmesh-pentest-standard.
 include:
-  - project: 'HugMesh/hugmesh-generator'
+  - project: 'hugmesh/hugmesh-generator'
     ref: main
     file: '/tests/pentest/ci/pentest-stage.gitlab-ci.yml'
 
