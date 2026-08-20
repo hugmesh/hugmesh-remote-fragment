@@ -23,7 +23,7 @@ generatorOptions:
 # (ESO-materialized, see manifests/external-secrets). ONLY the first-party sync
 # image is rewritten; the nginx container uses the public nginxinc/nginx-unprivileged.
 images:
-  - { name: hugmesh-net/hugmesh-remote-fragment, newName: registry.hugmesh.net/hugmesh/hugmesh-remote-fragment, newTag: main }
+  - { name: hugmesh/hugmesh-remote-fragment, newName: registry.hugmesh.net/hugmesh/hugmesh-remote-fragment, newTag: main }
 patches:
   - target: { kind: Deployment }
     patch: |

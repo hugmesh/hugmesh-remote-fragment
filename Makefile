@@ -68,6 +68,6 @@ pentest-dast: ## Full DAST harness (probes+nuclei+ZAP baseline) — delegates to
 	else \
 	  echo "[pentest:dast] harness not found at $(PENTEST_HARNESS_DIR)/run-pentest.sh."; \
 	  echo "[pentest:dast] clone the generator + run it, e.g.:"; \
-	  echo "    git clone https://github.com/hugmesh-net/hugmesh-generator /tmp/sg"; \
+	  echo "    git clone https://github.com/hugmesh/hugmesh-generator /tmp/sg"; \
 	  echo "    bash /tmp/sg/tests/pentest/run-pentest.sh --env compose --scan baseline --pipeline main"; \
 	fi
