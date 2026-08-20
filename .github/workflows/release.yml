@@ -14,8 +14,8 @@ on:
 
 env:
   REGISTRY: ghcr.io
-  SYNC_IMAGE: ghcr.io/hugmesh-net/hugmesh-remote-fragment
-  NGINX_IMAGE: ghcr.io/hugmesh-net/hugmesh-remote-fragment/nginx
+  SYNC_IMAGE: ghcr.io/hugmesh/hugmesh-remote-fragment
+  NGINX_IMAGE: ghcr.io/hugmesh/hugmesh-remote-fragment/nginx
 
 jobs:
   build-sync:

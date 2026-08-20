@@ -1,8 +1,8 @@
 # hugmesh-remote-fragment
 
-The **sync-and-serve-static** fragment fleet for [hugmesh-host-shell](https://github.com/hugmesh-net/hugmesh-host-shell), part of the [HugMesh](https://github.com/hugmesh-net) platform.
+The **sync-and-serve-static** fragment fleet for [hugmesh-host-shell](https://github.com/hugmesh/hugmesh-host-shell), part of the [HugMesh](https://github.com/hugmesh) platform.
 
-This service statically serves the platform's federated fragment bundles — user-profile/card modules, public vanity-profile fragments, and admin "contained pages" — published through the [hugmesh-federation-api](https://github.com/hugmesh-net/hugmesh-federation-api) keystone. The design is deliberately simple: each pod runs a stock `nginxinc/nginx-unprivileged` that serves a content-addressed, on-disk mirror of the currently-enabled fragment set. A co-located reactive Java sidecar keeps that mirror in sync by pulling from the federation API. Because nginx serves static bytes with no per-request proxy hop, the fleet is horizontally scalable (HPA-ready) and highly cacheable.
+This service statically serves the platform's federated fragment bundles — user-profile/card modules, public vanity-profile fragments, and admin "contained pages" — published through the [hugmesh-federation-api](https://github.com/hugmesh/hugmesh-federation-api) keystone. The design is deliberately simple: each pod runs a stock `nginxinc/nginx-unprivileged` that serves a content-addressed, on-disk mirror of the currently-enabled fragment set. A co-located reactive Java sidecar keeps that mirror in sync by pulling from the federation API. Because nginx serves static bytes with no per-request proxy hop, the fleet is horizontally scalable (HPA-ready) and highly cacheable.
 
 ## Where this fits in the platform
 
@@ -232,7 +232,7 @@ This repo builds two container images for one pod:
 ### Continuous integration
 
 * **`.gitlab-ci.yml`** — the pipeline used to build and publish images for the reference cluster deployment, run against an internally mirrored GitLab instance. It runs `test → build → pentest` on pushes to the default branch, on tags, and (for `test`/`pentest`) on merge requests. The `test` stage runs `./mvnw verify` in a container and publishes a JUnit report; both build jobs require a green `test`. The `pentest` stage runs OWASP Dependency-Check (SCA) and an authenticated ZAP baseline scan (DAST) as non-blocking (`allow_failure: true`) informational jobs, shared from `hugmesh-generator`'s centralized pentest harness.
-* **`.github/workflows/release.yml`** — a manual (`workflow_dispatch`) GitHub Actions workflow for anyone building from this repository directly on GitHub. It builds and pushes both images to GHCR (`ghcr.io/hugmesh-net/hugmesh-remote-fragment` and `.../nginx`), tagged with the short commit SHA (or a tag you supply) plus `latest`. It is not wired to run automatically — trigger it from the Actions tab.
+* **`.github/workflows/release.yml`** — a manual (`workflow_dispatch`) GitHub Actions workflow for anyone building from this repository directly on GitHub. It builds and pushes both images to GHCR (`ghcr.io/hugmesh/hugmesh-remote-fragment` and `.../nginx`), tagged with the short commit SHA (or a tag you supply) plus `latest`. It is not wired to run automatically — trigger it from the Actions tab.
 * **`make pentest`** — runs the same OWASP checks locally (SCA via `owasp/dependency-check`, DAST via the shared harness in `hugmesh-generator`). Both are informational/non-blocking locally; see the [`Makefile`](Makefile) for details and opt-in flags.
 
 ## Health checks and probes
@@ -260,17 +260,17 @@ The sync container runs as uid 1000 and nginx runs as uid 101 (the `nginx-unpriv
 * **Parent POM choice.** This project parents directly on `spring-boot-starter-parent` rather than the platform's shared `hugmesh-parent` metapom. `hugmesh-parent` carries a shared `<dependencies>` block written for the platform's reactive BFF services (Spring Security, an OAuth2 resource server, R2DBC, PostgreSQL, Liquibase); inheriting it onto this database-less, filter-less machine client auto-locks every non-`actuator/health`/`info` path behind a randomly generated HTTP Basic password and adds an unused SpringDoc/Swagger surface. Instead, this project depends directly on `hugmesh-commons` (pinned version, with `<exclusions>` stripping those same transitive artifacts) to stay aligned with the rest of the fleet without that side effect. `hugmesh-commons` is not currently used by any class in this repo — there's no security/tenancy surface here to migrate onto it.
 * **No cross-restart pruning is needed.** The nginx root lives in an `emptyDir` that's re-derived from the manifest on every pod start, so a removed fragment is simply absent after a restart regardless of pruning; the sync's own prune step exists for the *live*, long-running loop case.
 * **Horizontal autoscaling requires a metrics-server** in the cluster. The reference Deployment ships a static replica floor that works without one; the HPA takes over scaling above that floor once metrics-server is installed.
-* **The in-repo `deploy/` Kustomize tree and `hugmesh-deploy.yaml`** are prepared for a future GitOps source (a self-hosted, Git-backed service catalog) and are not the live deployment path today — the reference cluster currently deploys from a central manifest maintained in [`hugmesh-generator`](https://github.com/hugmesh-net/hugmesh-generator). `deploy/` is a copy of that central manifest with only the first-party sync image rewritten to a different registry; keep it in sync with the upstream manifest until your GitOps source actually points here.
+* **The in-repo `deploy/` Kustomize tree and `hugmesh-deploy.yaml`** are prepared for a future GitOps source (a self-hosted, Git-backed service catalog) and are not the live deployment path today — the reference cluster currently deploys from a central manifest maintained in [`hugmesh-generator`](https://github.com/hugmesh/hugmesh-generator). `deploy/` is a copy of that central manifest with only the first-party sync image rewritten to a different registry; keep it in sync with the upstream manifest until your GitOps source actually points here.
 * **Native compilation isn't run in this repo's own CI.** `./mvnw -Pnative native:compile` is available via the Maven profile and the GraalVM reflection hints in `NativeHintsConfig`, but the actual native build is expected to run on CI/hosts with GraalVM installed. The default published image is the JRE-jar build from the plain `Dockerfile`.
 * **The service never validates the Casdoor token itself** — it only mints and forwards it. Federation, as the resource server, is responsible for validating the JWT.
 
 ## Related HugMesh projects
 
-* [hugmesh-federation-api](https://github.com/hugmesh-net/hugmesh-federation-api) — the federation catalog this fleet syncs from; owns visibility, the kill-switch, and per-domain scoping.
-* [hugmesh-host-shell](https://github.com/hugmesh-net/hugmesh-host-shell) — the frontend host application that loads fragments served by this fleet via `loadRemoteModule`.
-* [hugmesh-generator](https://github.com/hugmesh-net/hugmesh-generator) — source of the shared pentest CI stage and the reference cluster's central deployment manifests.
-* [hugmesh-commons](https://github.com/hugmesh-net/hugmesh-commons) — the shared library this project depends on for artifact alignment with the rest of the Java fleet.
-* [hugmesh-auth-core](https://github.com/hugmesh-net/hugmesh-auth-core) — the platform's shared account/session/MFA/Casdoor-admin library, consumed by the user- and admin-facing backends. Out of scope for this service, which has no interactive auth surface of its own.
+* [hugmesh-federation-api](https://github.com/hugmesh/hugmesh-federation-api) — the federation catalog this fleet syncs from; owns visibility, the kill-switch, and per-domain scoping.
+* [hugmesh-host-shell](https://github.com/hugmesh/hugmesh-host-shell) — the frontend host application that loads fragments served by this fleet via `loadRemoteModule`.
+* [hugmesh-generator](https://github.com/hugmesh/hugmesh-generator) — source of the shared pentest CI stage and the reference cluster's central deployment manifests.
+* [hugmesh-commons](https://github.com/hugmesh/hugmesh-commons) — the shared library this project depends on for artifact alignment with the rest of the Java fleet.
+* [hugmesh-auth-core](https://github.com/hugmesh/hugmesh-auth-core) — the platform's shared account/session/MFA/Casdoor-admin library, consumed by the user- and admin-facing backends. Out of scope for this service, which has no interactive auth surface of its own.
 
 ## Contributing
 
