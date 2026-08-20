@@ -12,10 +12,17 @@
 # catalog matches nothing, so it changes nothing running. deploy/ is a verbatim
 # copy of the central manifest — keep the two in sync until cutover.
 #
+# THAT SYNC IS NOW ENFORCED, because being dark is exactly what let it rot: a
+# copy nothing renders drifts in silence, and kustomize cannot report a resource
+# nobody listed. scripts/check-deploy-drift.sh byte-diffs deploy/ against the
+# central manifest both ways; CI runs it as lint:deploy-manifest-drift. If you
+# change deploy/, change the central manifest in the same breath (or the other
+# way round) — the gate fails on either half landing alone.
+#
 # NOTE: the deploy/ kustomize also materializes the nginx config (nginx.conf ->
 # ConfigMap remote-fragment-nginx via configMapGenerator, disableNameSuffixHash)
 # exactly as the central manifest does. ONLY the first-party sync image is rewritten
-# to the GitLab registry; the static container stays on public nginxinc/nginx-
+# to the in-cluster Harbor registry; the static container stays on public nginxinc/nginx-
 # unprivileged:1.27-alpine (not rewritten), so this repo's image: coord below names
 # the sync image, which is the repo's own first-party artifact.
 name: hugmesh-remote-fragment  # Application name
