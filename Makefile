@@ -12,6 +12,12 @@
 # Self-contained + non-hard-failing: missing Docker / no opt-in / no harness are
 # reported and skipped, never a hard error, so `make pentest` is safe to run
 # anywhere. CI itself uses the .gitlab-ci.yml pentest stage, not this target.
+#
+# `make check-deploy-drift` runs the deploy/ vs central-manifest drift guard
+# (scripts/check-deploy-drift.sh) that CI's lint:deploy-manifest-drift runs,
+# against a sibling generator checkout. Unlike `pentest`, this one DOES fail:
+# with no checkout to compare against it exits 3 (INCOMPLETE) rather than
+# reporting green on an assertion that never ran.
 
 SHELL := /bin/bash
 
@@ -27,7 +33,11 @@ SCA_FAIL_CVSS   ?= 9
 # is set, `make pentest` prints the clone+run command instead of failing.
 PENTEST_HARNESS_DIR ?= ../hugmesh-generator/tests/pentest
 
-.PHONY: pentest pentest-sca pentest-dast
+# Same sibling-checkout convention for the central deployment manifest that
+# deploy/ is a verbatim copy of. Override to any hugmesh-generator checkout.
+GENERATOR_ROOT ?= ../hugmesh-generator
+
+.PHONY: pentest pentest-sca pentest-dast check-deploy-drift
 
 pentest: pentest-sca pentest-dast ## Run the local OWASP pen-test mirror (SCA + DAST)
 	@echo "[pentest] done."
@@ -71,3 +81,6 @@ pentest-dast: ## Full DAST harness (probes+nuclei+ZAP baseline) — delegates to
 	  echo "    git clone https://github.com/hugmesh/hugmesh-generator /tmp/sg"; \
 	  echo "    bash /tmp/sg/tests/pentest/run-pentest.sh --env compose --scan baseline --pipeline main"; \
 	fi
+
+check-deploy-drift: ## Diff deploy/ against hugmesh-generator's central manifest (mirrors lint:deploy-manifest-drift)
+	@GENERATOR_ROOT="$(GENERATOR_ROOT)" bash scripts/check-deploy-drift.sh

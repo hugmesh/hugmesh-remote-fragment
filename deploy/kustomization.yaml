@@ -4,6 +4,7 @@ namespace: hugmesh-frontend
 resources:
   - deployment.yaml
   - hpa.yaml
+  - pdb.yaml
 
 # nginx.conf is materialized into a ConfigMap and mounted at
 # /etc/nginx/conf.d/default.conf (route-access pattern) so the stock
@@ -16,10 +17,10 @@ configMapGenerator:
 generatorOptions:
   disableNameSuffixHash: true
 
-# First-party images now pull from the in-cluster GitLab container registry
-# (registry.hugmesh.net = the GitLab chart's hosts.domain default; project
+# First-party images now pull from the in-cluster Harbor container registry
+# (registry.hugmesh.net = inherited from GitLab's chart hosts.domain default, kept as-is; now served by Harbor (apps/03a-harbor.yaml), project
 # path = <group>/<repo>). The CI in each repo pushes :<branch> + :<sha>; we track
-# the moving :main here for dev. Pulls need the gitlab-registry imagePullSecret
+# the moving :main here for dev. Pulls need the harbor-registry imagePullSecret
 # (ESO-materialized, see manifests/external-secrets). ONLY the first-party sync
 # image is rewritten; the nginx container uses the public nginxinc/nginx-unprivileged.
 images:
@@ -30,4 +31,4 @@ patches:
       - op: add
         path: /spec/template/spec/imagePullSecrets
         value:
-          - name: gitlab-registry
+          - name: harbor-registry

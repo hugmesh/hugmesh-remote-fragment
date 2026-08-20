@@ -22,7 +22,41 @@ include:
     ref: main
     file: '/tests/pentest/ci/pentest-stage.gitlab-ci.yml'
 
-stages: [test, build, pentest]
+stages: [lint, test, build, pentest]
+
+# deploy/ vs central-manifest DRIFT guard. deploy/ + hugmesh-deploy.yaml are the
+# Forgejo-cutover copy of the reference cluster's central manifest, which still
+# lives in the generator at specs/cluster/manifests/remote-fragment and stays
+# authoritative until cutover. Nothing renders the copy today, so it drifted
+# silently three ways at once (a PodDisruptionBudget never copied across, the
+# GitLab -> Harbor imagePullSecret migration, a renamed sibling repo) while
+# `kubectl kustomize deploy/` kept exiting 0 — a resource nobody listed cannot be
+# reported missing. This job is the only thing that can see it: a byte diff
+# against the source.
+#
+# Sparse-clones just that one manifest dir (~4 MB, no blobs) from the SAME org
+# over ORG_BASE, derived from CI_REPOSITORY_URL, which carries the read-only CI
+# job token — no secret committed. Mirrors how the generator's own cross-repo
+# jobs reach their siblings. A clone failure fails the job, on purpose: the guard
+# exits 3 (INCOMPLETE) rather than green when it has nothing to compare against.
+lint:deploy-manifest-drift:
+  stage: lint
+  image: alpine:3
+  tags: [hugmesh-x86]
+  variables:
+    GENERATOR_ROOT: "${CI_PROJECT_DIR}/.central-manifest"
+    GENERATOR_REF: "main"
+  before_script:
+    - apk add --no-cache bash git diffutils coreutils
+    - ORG_BASE="$(dirname "${CI_REPOSITORY_URL}")"
+    - git clone --depth 1 --branch "${GENERATOR_REF}" --filter=blob:none --sparse "${ORG_BASE}/hugmesh-generator.git" "${GENERATOR_ROOT}"
+    - git -C "${GENERATOR_ROOT}" sparse-checkout set specs/cluster/manifests/remote-fragment
+  script:
+    - bash scripts/check-deploy-drift.sh
+  rules:
+    - if: '$CI_COMMIT_BRANCH == $CI_DEFAULT_BRANCH'
+    - if: '$CI_PIPELINE_SOURCE == "merge_request_event"'
+    - if: '$CI_COMMIT_TAG'
 
 test:
   stage: test

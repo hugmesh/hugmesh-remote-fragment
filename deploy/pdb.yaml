@@ -1,0 +1,25 @@
+# PodDisruptionBudget for hugmesh-remote-fragment. This workload runs an HPA (hpa.yaml) with
+# minReplicas: 2 — an HA pair — so a voluntary disruption (node drain / cluster
+# upgrade) must never take BOTH pods at once. minAvailable: 1 lets a drain evict at
+# most one pod while guaranteeing the second keeps serving, so a rolling node
+# upgrade stays available instead of black-holing the service for a moment.
+#
+# Shape mirrors the only other PDB in the repo (node-storage-placement/pdb.yaml):
+# policy/v1, a single app-label selector, namespace inherited from the kustomization
+# (this dir sets it). Unlike the node-storage PDB (minAvailable: 1 over a SINGLE
+# node-pinned replica, which deliberately BLOCKS all drains), this is over a 2+
+# replica HPA target, so minAvailable: 1 PERMITS rolling drains while keeping one
+# survivor. Purely additive: a PDB constrains only voluntary eviction, never
+# scheduling or scale, so it cannot crash-loop or change steady-state behaviour.
+apiVersion: policy/v1
+kind: PodDisruptionBudget
+metadata:
+  name: hugmesh-remote-fragment
+  labels:
+    app: hugmesh-remote-fragment
+    app.kubernetes.io/part-of: hugmesh.net
+spec:
+  minAvailable: 1
+  selector:
+    matchLabels:
+      app: hugmesh-remote-fragment
