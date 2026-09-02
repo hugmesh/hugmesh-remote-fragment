@@ -238,6 +238,17 @@ in **both** shapes the pod uses:
 If the machine has no GraalVM it builds inside `ghcr.io/graalvm/graalvm-community:25`;
 if it has neither GraalVM nor Docker it fails rather than skipping.
 
+It needs a warm `~/.m2`, for the same reason `./mvnw test` does: `net.hugmesh:hugmesh-commons`
+is private and is **not on Maven Central**. The build container runs with `HOME=/tmp`
+(so Maven never writes into the bind-mounted workspace), which also means it cannot
+see your `~/.m2` — so the script mounts it in. Run `./mvnw test` once first if yours
+is cold, or point `NATIVE_BUILD_M2` at a Maven repo that has the artifact. With no
+usable repo and no `CI_JOB_TOKEN` the script stops **before** compiling and says which
+of the two is missing; without that check the run dies half a minute later inside
+Maven as `Could not find artifact net.hugmesh:hugmesh-commons:jar:2.1.0 in central`,
+which names the one repository the artifact was never going to be in. On CI the token
+is present, so the job resolves from the GitLab registry and mounts nothing.
+
 Why the binary is *run* and not just compiled: missing native reflection metadata
 does not fail `native-image`, it fails the first time the code path executes.
 Both of these mutations of `NativeHintsConfig` were built and run, and **both

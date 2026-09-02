@@ -35,8 +35,11 @@
 #   GRAALVM_IMAGE             container image used when no local GraalVM exists
 #                             (default ghcr.io/graalvm/graalvm-community:25)
 #   NATIVE_BUILD_IN_DOCKER    1 = force the container path, 0 = forbid it
-#   NATIVE_BUILD_M2           host Maven repo to bind into the container
-#                             (optional cache; empty = throwaway repo)
+#   NATIVE_BUILD_M2           host Maven repo to bind into the container. Defaults
+#                             to ~/.m2 when there is no CI_JOB_TOKEN, because
+#                             that is the only place the private hugmesh-commons
+#                             exists on a dev box; unused on the CI path, which
+#                             resolves cold from the GitLab registry
 #   NATIVE_IMAGE_OPTIONS      passed through to native-image, e.g. "-J-Xmx6g"
 set -euo pipefail
 
@@ -76,6 +79,57 @@ find_graalvm() {
 
 cd "$REPO_ROOT"
 
+# ---------------------------------------------------------------------------
+# Where net.hugmesh:hugmesh-commons comes from -- the ONE dependency in this
+# pom that is NOT on Maven Central. There are exactly two ways it can resolve,
+# and if neither is available this script has to say so HERE. Without this
+# check the run dies ~30 s later, inside Maven, as
+# "Could not find artifact net.hugmesh:hugmesh-commons:jar:2.1.0 in central" --
+# an error that names Central, i.e. the one place the artifact was never going
+# to be, and says nothing about the credential or the repo that were missing.
+#
+#   CI  -- CI_JOB_TOKEN is set, so settings.xml points Maven at the org's
+#          GitLab group Maven registry (see MVN_SETTINGS below). Nothing is
+#          mounted; every pipeline resolves cold. CI_API_V4_URL and
+#          GITLAB_GROUP_ID must BOTH be non-empty: settings.xml interpolates
+#          them into the URL, and an empty group id yields
+#          ".../groups//-/packages/maven", which 404s and is then reported as
+#          a missing ARTIFACT rather than a missing VARIABLE.
+#
+#   dev -- no CI_JOB_TOKEN. The artifact is in the developer's ~/.m2 (that is
+#          how a plain `./mvnw test` resolves it here), so the host repo is
+#          bind-mounted into the container. It is NOT reachable otherwise: the
+#          container deliberately runs with HOME=/tmp, so without the mount
+#          Maven starts from an empty repo and falls through to Central.
+#          Measured: `make native` on a box with a perfectly good warm ~/.m2
+#          failed exactly that way before this mount existed.
+M2_REPO_HOME="${NATIVE_BUILD_M2:-$HOME/.m2}"
+
+preflight_commons() {
+  if [ -n "${CI_JOB_TOKEN:-}" ]; then
+    [ -n "${CI_API_V4_URL:-}" ] \
+      || die "CI_JOB_TOKEN is set but CI_API_V4_URL is empty. settings.xml builds the
+       registry URL out of both, and an empty one resolves to a 404 that Maven
+       then reports as a missing net.hugmesh:hugmesh-commons artifact."
+    [ -n "${GITLAB_GROUP_ID:-}" ] \
+      || die "CI_JOB_TOKEN is set but GITLAB_GROUP_ID is empty, so settings.xml would
+       ask for \"\${CI_API_V4_URL}/groups//-/packages/maven\". Set GITLAB_GROUP_ID
+       to the org group id as a CI/CD variable."
+    log "CI_JOB_TOKEN present -- hugmesh-commons will resolve from the GitLab registry"
+    return 0
+  fi
+  [ -d "${M2_REPO_HOME}/repository/net/hugmesh/hugmesh-commons" ] \
+    || die "net.hugmesh:hugmesh-commons is private -- it is NOT on Maven Central -- and
+       there is no way to fetch it here: no CI_JOB_TOKEN (the CI path), and no
+       copy under ${M2_REPO_HOME}/repository/net/hugmesh/hugmesh-commons (the
+       developer path). Either run \`./mvnw test\` once so the artifact is in your
+       ~/.m2, or point NATIVE_BUILD_M2 at a Maven repo that already has it, or
+       export CI_JOB_TOKEN/CI_API_V4_URL/GITLAB_GROUP_ID for the registry."
+  log "resolving hugmesh-commons from the local Maven repo at ${M2_REPO_HOME}"
+}
+
+preflight_commons
+
 GVM_HOME="$(find_graalvm)"
 IN_DOCKER="${NATIVE_BUILD_IN_DOCKER:-auto}"
 if [ "$IN_DOCKER" = "auto" ]; then
@@ -93,9 +147,17 @@ if [ "$IN_DOCKER" = "1" ]; then
   # HOME=/tmp keeps the Maven repo OUT of the bind-mounted project dir -- this
   # repo has no .dockerignore, so a .m2 under the workspace would be swept into
   # the `docker build` context of the image jobs.
+  # The container's HOME is /tmp, so /tmp/.m2 is the Maven repo it will use.
+  # With a CI_JOB_TOKEN we mount nothing and let the pipeline resolve cold from
+  # the GitLab registry; without one, the host repo is the only place
+  # hugmesh-commons exists, so it is mounted there (preflight_commons above has
+  # already established that it is present).
   M2_MOUNT=()
   if [ -n "${NATIVE_BUILD_M2:-}" ]; then
     M2_MOUNT=(-v "${NATIVE_BUILD_M2}:/tmp/.m2")
+  elif [ -z "${CI_JOB_TOKEN:-}" ]; then
+    M2_MOUNT=(-v "${M2_REPO_HOME}:/tmp/.m2")
+    log "bind-mounting ${M2_REPO_HOME} -> /tmp/.m2 (private hugmesh-commons lives there)"
   fi
   SMOKE_ARG=()
   if [ "$RUN_SMOKE" = "0" ]; then SMOKE_ARG=(--no-smoke); fi

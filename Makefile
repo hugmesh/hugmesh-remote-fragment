@@ -29,6 +29,15 @@
 # surfaces at first execution, not at build time. Like check-deploy-drift and
 # unlike pentest, it DOES fail -- no GraalVM and no Docker is an error, never a
 # silent skip.
+#
+# It needs a warm ~/.m2, for the same reason `./mvnw test` does: the private
+# net.hugmesh:hugmesh-commons is not on Maven Central. When the build falls back
+# into the GraalVM container that repo is bind-mounted in (the container runs
+# with HOME=/tmp and would otherwise start from an empty one). If it is not
+# there, the script says so up front instead of failing 30 s later inside Maven
+# with "Could not find artifact ... in central" -- an error that names the one
+# place the artifact was never going to be. Override with NATIVE_BUILD_M2, or
+# set CI_JOB_TOKEN/CI_API_V4_URL/GITLAB_GROUP_ID to resolve from the registry.
 
 SHELL := /bin/bash
 

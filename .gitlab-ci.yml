@@ -150,6 +150,17 @@ build:native:
     # would be swept into the `docker build` context of build:sync/build:nginx
     # (same stage, same shell-executor workspace). Add a .dockerignore first if
     # you want to cache here.
+    #
+    # Cold resolution is only viable BECAUSE this job has a CI_JOB_TOKEN: the
+    # one dependency that is not on Maven Central, net.hugmesh:hugmesh-commons,
+    # comes from the org's GitLab registry via settings.xml, which the script
+    # passes to Maven exactly when that token is present. (Off CI there is no
+    # token, so the script bind-mounts the developer's ~/.m2 instead -- that
+    # path never fires here.) The script preflights all three of
+    # CI_JOB_TOKEN / CI_API_V4_URL / GITLAB_GROUP_ID before compiling, because
+    # an empty GITLAB_GROUP_ID silently builds the URL ".../groups//-/packages/
+    # maven" and Maven then reports the result as a missing ARTIFACT rather than
+    # a missing VARIABLE.
   script:
     - bash scripts/native-build.sh
 
