@@ -58,6 +58,25 @@ lint:deploy-manifest-drift:
     - if: '$CI_PIPELINE_SOURCE == "merge_request_event"'
     - if: '$CI_COMMIT_TAG'
 
+# JVM unit/integration tests. build:native `needs:` this job, so a test job that
+# cannot pass is a native job that never runs. Three things about the
+# `docker run` line are load-bearing and were each wrong before; both failures
+# below were reproduced by running the old line verbatim:
+#   * `-s settings.xml`, plus CI_JOB_TOKEN / CI_API_V4_URL / GITLAB_GROUP_ID
+#     passed INTO the container. net.hugmesh:hugmesh-commons is private and is
+#     published only to the org's GitLab Maven registry (it is not on Maven
+#     Central), and a fresh container has an empty ~/.m2. This is what the old
+#     line hit FIRST: "Could not find artifact net.hugmesh:hugmesh-commons:jar:
+#     2.1.0 in central". The Dockerfile has always passed `-s settings.xml`;
+#     this job did not.
+#   * the workspace is mounted READ-WRITE. It used to be `:ro`, and Maven's very
+#     first act is to create target/ -- measured: `touch target/x` under that
+#     mount is "Read-only file system" -- so even with the dependency resolved
+#     the job would die before running a single test, and the
+#     `target/surefire-reports/` artifact it declares could never have existed.
+#   * `--user` + `HOME=/tmp`: without them the container writes target/ as root
+#     into the shell executor's workspace, which then breaks the next
+#     pipeline's checkout, and drops a root-owned .m2 next to the sources.
 test:
   stage: test
   tags: [hugmesh-x86, privileged]
@@ -66,7 +85,12 @@ test:
     - if: '$CI_PIPELINE_SOURCE == "merge_request_event"'
     - if: '$CI_COMMIT_TAG'
   script:
-    - docker run --rm -v "${CI_PROJECT_DIR}:/workspace:ro" -w /workspace eclipse-temurin:25-jdk-noble ./mvnw verify -B
+    - >-
+      docker run --rm
+      --user "$(id -u):$(id -g)" -e HOME=/tmp
+      -e CI_JOB_TOKEN -e CI_API_V4_URL -e GITLAB_GROUP_ID
+      -v "${CI_PROJECT_DIR}:/workspace" -w /workspace
+      eclipse-temurin:25-jdk-noble ./mvnw -B -s settings.xml verify
   artifacts:
     when: always
     reports:
@@ -74,6 +98,60 @@ test:
     paths:
       - target/surefire-reports/
     expire_in: 7 days
+
+# GraalVM NATIVE build. The pom has carried a `native` profile and
+# NativeHintsConfig since day one, but nothing ever compiled it -- so a change
+# that broke native compatibility would only have surfaced when somebody built
+# a native image by hand. This job closes that (issue #5).
+#
+# It does not merely compile. scripts/native-build.sh compiles AND then RUNS the
+# resulting binary, twice, against a stub federation + Casdoor
+# (scripts/NativeSmoke.java): once in SYNC_MODE=once (the initContainer shape --
+# assert the bundle files and index.json land on disk) and once in
+# SYNC_MODE=loop (the production sidecar shape -- assert /actuator/health/readiness
+# comes back UP over HTTP with FirstSyncHealthIndicator's live counters in it).
+#
+# Compiling alone would prove very little, because missing native reflection
+# metadata does not fail native-image -- it fails at first execution. Measured on
+# two mutations of NativeHintsConfig, both of which native-image built as
+# BUILD SUCCESS:
+#   * drop the FederationManifest/.Remote hints -> binary exits 1,
+#     "Record components not available for record class ...FederationManifest"
+#   * drop the BundleMetadata hint             -> binary exits **0**, logs
+#     "1 failed" and writes nothing. Only the on-disk assertions catch that one.
+# An exit-status-only check would have passed the second mutation.
+#
+# Runs on merge requests as well as the default branch and tags: catching a
+# native regression after it has landed on main is most of the way to not
+# catching it at all. Same shell-executor + docker shape as `test`; the GraalVM
+# toolchain comes from the container image, so no runner needs GraalVM
+# installed. `make native` runs the identical script locally.
+build:native:
+  stage: build
+  needs: [test]
+  tags: [hugmesh-x86, privileged]
+  timeout: 45m
+  rules:
+    - if: '$CI_COMMIT_BRANCH == $CI_DEFAULT_BRANCH'
+    - if: '$CI_PIPELINE_SOURCE == "merge_request_event"'
+    - if: '$CI_COMMIT_TAG'
+  variables:
+    GRAALVM_IMAGE: "ghcr.io/graalvm/graalvm-community:25"
+    # Force the container path even if a runner happens to have GraalVM on PATH,
+    # so every pipeline compiles against the same pinned toolchain.
+    NATIVE_BUILD_IN_DOCKER: "1"
+    # native-image otherwise sizes its heap at 80% of the RUNNER's RAM, which on
+    # a shared privileged runner is a good way to OOM whatever else is building.
+    NATIVE_IMAGE_OPTIONS: "-J-Xmx6g"
+    # NATIVE_BUILD_M2 is deliberately NOT set. The script's fallback is a
+    # throwaway Maven repo under HOME=/tmp inside the container, so every
+    # pipeline resolves cold -- slower, but the alternative is a .m2 cached
+    # under CI_PROJECT_DIR, and this repo has no .dockerignore, so that cache
+    # would be swept into the `docker build` context of build:sync/build:nginx
+    # (same stage, same shell-executor workspace). Add a .dockerignore first if
+    # you want to cache here.
+  script:
+    - bash scripts/native-build.sh
 
 build:sync:
   stage: build

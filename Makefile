@@ -18,12 +18,27 @@
 # against a sibling generator checkout. Unlike `pentest`, this one DOES fail:
 # with no checkout to compare against it exits 3 (INCOMPLETE) rather than
 # reporting green on an assertion that never ran.
+#
+# `make native` runs the GraalVM native build EXACTLY as CI's build:native job
+# does -- both call scripts/native-build.sh, so there is one definition of the
+# native build and a red pipeline is always reproducible here. It compiles the
+# binary and then RUNS it TWICE against a stub federation + Casdoor -- once as
+# the initContainer (SYNC_MODE=once, bytes on disk) and once as the sidecar
+# (SYNC_MODE=loop, /actuator/health/readiness UP over HTTP) -- because a native
+# image that merely compiles proves almost nothing: missing reflection metadata
+# surfaces at first execution, not at build time. Like check-deploy-drift and
+# unlike pentest, it DOES fail -- no GraalVM and no Docker is an error, never a
+# silent skip.
 
 SHELL := /bin/bash
 
 # Public images used so this matches CI without bundling a runner image.
 TEMURIN_IMAGE   ?= eclipse-temurin:25-jdk-noble
 DEPCHECK_IMAGE  ?= owasp/dependency-check:latest
+# GraalVM toolchain for `make native`, used only when the machine has no local
+# GraalVM (no bin/native-image under GRAALVM_HOME/JAVA_HOME). Same pin as the
+# build:native CI job.
+GRAALVM_IMAGE   ?= ghcr.io/graalvm/graalvm-community:25
 
 # Fail the local SCA build only on a critical (CVSS>=9) finding.
 SCA_FAIL_CVSS   ?= 9
@@ -37,7 +52,7 @@ PENTEST_HARNESS_DIR ?= ../hugmesh-generator/tests/pentest
 # deploy/ is a verbatim copy of. Override to any hugmesh-generator checkout.
 GENERATOR_ROOT ?= ../hugmesh-generator
 
-.PHONY: pentest pentest-sca pentest-dast check-deploy-drift
+.PHONY: pentest pentest-sca pentest-dast check-deploy-drift native native-compile
 
 pentest: pentest-sca pentest-dast ## Run the local OWASP pen-test mirror (SCA + DAST)
 	@echo "[pentest] done."
@@ -84,3 +99,9 @@ pentest-dast: ## Full DAST harness (probes+nuclei+ZAP baseline) — delegates to
 
 check-deploy-drift: ## Diff deploy/ against hugmesh-generator's central manifest (mirrors lint:deploy-manifest-drift)
 	@GENERATOR_ROOT="$(GENERATOR_ROOT)" bash scripts/check-deploy-drift.sh
+
+native: ## GraalVM native build + runtime smoke test (mirrors CI's build:native)
+	@GRAALVM_IMAGE="$(GRAALVM_IMAGE)" bash scripts/native-build.sh
+
+native-compile: ## Compile the native binary only, without the runtime smoke test
+	@GRAALVM_IMAGE="$(GRAALVM_IMAGE)" bash scripts/native-build.sh --no-smoke
