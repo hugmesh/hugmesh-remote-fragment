@@ -1,0 +1,52 @@
+# Build context for the root Dockerfile (build:sync). Line 20 of that Dockerfile
+# is `COPY . .`, so without this file everything in the workspace is uploaded to
+# the daemon and baked into the build stage's layer cache.
+#
+# This became load-bearing rather than merely tidy when the `test` job's
+# workspace mount changed from `:ro` to read-write (it had to: Maven's first act
+# is to create target/, and the job could not previously do that). test,
+# build:native and build:sync all run on the SAME shell-executor workspace, so
+# target/ now really exists when build:sync runs -- and build:native leaves a
+# ~128 MB `target/remote-fragment` in it. GitLab's default
+# GIT_CLEAN_FLAGS=-ffdx would remove it, but this pipeline pins neither
+# GIT_STRATEGY nor GIT_CLEAN_FLAGS, so relying on that is an unstated dependency
+# on a GitLab default. Excluding it here does not depend on runner config.
+#
+# Keep .mvn/, mvnw, pom.xml, settings.xml and src/ -- the build stage runs
+# `./mvnw -B -s settings.xml package` and needs all five.
+
+# Maven output, including the native binary build:native leaves behind.
+target/
+*.class
+
+# VCS + the sparse clone lint:deploy-manifest-drift makes of the generator repo.
+.git/
+.gitignore
+.gitattributes
+.central-manifest/
+
+# Local Maven repo, if anyone ever caches one under the workspace.
+.m2/
+
+# Pentest/report output (see the Makefile's pentest + sca targets).
+out/
+
+# Not consumed by this image: the nginx image builds from the `nginx/` context,
+# and the k8s manifests/CI config are never read at build time.
+nginx/
+deploy/
+hugmesh-deploy.yaml
+.github/
+.gitlab-ci.yml
+
+# Secrets and local overrides must never reach the daemon.
+.env
+*.env
+
+# IDE / OS metadata.
+.classpath
+.project
+.settings/
+.idea/
+*.iml
+.DS_Store

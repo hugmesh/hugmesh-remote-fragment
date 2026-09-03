@@ -18,12 +18,49 @@
 # against a sibling generator checkout. Unlike `pentest`, this one DOES fail:
 # with no checkout to compare against it exits 3 (INCOMPLETE) rather than
 # reporting green on an assertion that never ran.
+#
+# `make native` runs the GraalVM native build as CI's build:native job does --
+# both call scripts/native-build.sh with the same three variables
+# (GRAALVM_IMAGE, NATIVE_BUILD_IN_DOCKER, NATIVE_IMAGE_OPTIONS; see below), so
+# there is one definition of the native build and a red pipeline is reproducible
+# here. What still differs off CI is where the private hugmesh-commons comes
+# from: with no CI_JOB_TOKEN the script bind-mounts your ~/.m2 instead of
+# resolving cold from the GitLab registry. It compiles the
+# binary and then RUNS it TWICE against a stub federation + Casdoor -- once as
+# the initContainer (SYNC_MODE=once, bytes on disk) and once as the sidecar
+# (SYNC_MODE=loop, /actuator/health/readiness UP over HTTP) -- because a native
+# image that merely compiles proves almost nothing: missing reflection metadata
+# surfaces at first execution, not at build time. Like check-deploy-drift and
+# unlike pentest, it DOES fail -- no GraalVM and no Docker is an error, never a
+# silent skip.
+#
+# It needs a warm ~/.m2, for the same reason `./mvnw test` does: the private
+# net.hugmesh:hugmesh-commons is not on Maven Central. When the build falls back
+# into the GraalVM container that repo is bind-mounted in (the container runs
+# with HOME=/tmp and would otherwise start from an empty one). If it is not
+# there, the script says so up front instead of failing 30 s later inside Maven
+# with "Could not find artifact ... in central" -- an error that names the one
+# place the artifact was never going to be. Override with NATIVE_BUILD_M2, or
+# set CI_JOB_TOKEN/CI_API_V4_URL/GITLAB_GROUP_ID to resolve from the registry.
 
 SHELL := /bin/bash
 
 # Public images used so this matches CI without bundling a runner image.
 TEMURIN_IMAGE   ?= eclipse-temurin:25-jdk-noble
 DEPCHECK_IMAGE  ?= owasp/dependency-check:latest
+# GraalVM toolchain for `make native`. Same pin as the build:native CI job.
+GRAALVM_IMAGE   ?= ghcr.io/graalvm/graalvm-community:25
+# The other two halves of build:native's environment, so `make native` really is
+# the CI invocation rather than merely the same script. Passing GRAALVM_IMAGE
+# alone was not enough: scripts/native-build.sh defaults NATIVE_BUILD_IN_DOCKER
+# to `auto`, and `auto` picks the HOST toolchain whenever a bin/native-image is
+# found under GRAALVM_HOME/JAVA_HOME/PATH -- i.e. on exactly the developer box a
+# native regression gets triaged on, where it would also resolve from a warm
+# ~/.m2 instead of cold, and with no builder heap cap. A red pipeline caused by
+# the pinned 25 toolchain or by the 6g cap would then not reproduce here.
+# Override to 0 or auto to use a locally installed GraalVM instead.
+NATIVE_BUILD_IN_DOCKER ?= 1
+NATIVE_IMAGE_OPTIONS   ?= -J-Xmx6g
 
 # Fail the local SCA build only on a critical (CVSS>=9) finding.
 SCA_FAIL_CVSS   ?= 9
@@ -37,7 +74,7 @@ PENTEST_HARNESS_DIR ?= ../hugmesh-generator/tests/pentest
 # deploy/ is a verbatim copy of. Override to any hugmesh-generator checkout.
 GENERATOR_ROOT ?= ../hugmesh-generator
 
-.PHONY: pentest pentest-sca pentest-dast check-deploy-drift
+.PHONY: pentest pentest-sca pentest-dast check-deploy-drift native native-compile
 
 pentest: pentest-sca pentest-dast ## Run the local OWASP pen-test mirror (SCA + DAST)
 	@echo "[pentest] done."
@@ -84,3 +121,9 @@ pentest-dast: ## Full DAST harness (probes+nuclei+ZAP baseline) — delegates to
 
 check-deploy-drift: ## Diff deploy/ against hugmesh-generator's central manifest (mirrors lint:deploy-manifest-drift)
 	@GENERATOR_ROOT="$(GENERATOR_ROOT)" bash scripts/check-deploy-drift.sh
+
+native: ## GraalVM native build + runtime smoke test (mirrors CI's build:native)
+	@GRAALVM_IMAGE="$(GRAALVM_IMAGE)" NATIVE_BUILD_IN_DOCKER="$(NATIVE_BUILD_IN_DOCKER)" NATIVE_IMAGE_OPTIONS="$(NATIVE_IMAGE_OPTIONS)" bash scripts/native-build.sh
+
+native-compile: ## Compile the native binary only, without the runtime smoke test
+	@GRAALVM_IMAGE="$(GRAALVM_IMAGE)" NATIVE_BUILD_IN_DOCKER="$(NATIVE_BUILD_IN_DOCKER)" NATIVE_IMAGE_OPTIONS="$(NATIVE_IMAGE_OPTIONS)" bash scripts/native-build.sh --no-smoke

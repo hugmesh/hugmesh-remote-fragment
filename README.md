@@ -219,8 +219,54 @@ The image carries **no keys**; the client secret is injected at runtime via `sec
 ```bash
 ./mvnw test                     # green, no external infra (federation/Casdoor stubbed)
 ./mvnw package -DskipTests      # runnable Spring Boot fat jar in target/
-./mvnw -Pnative native:compile  # GraalVM native binary (the platform standard)
+make native                     # GraalVM native binary + a runtime smoke test
+make native-compile             # native binary only, no smoke test
+./mvnw -Pnative native:compile  # the raw compile, if you have GraalVM on JAVA_HOME
 ```
+
+`make native` is the one to use. It runs [`scripts/native-build.sh`](scripts/native-build.sh)
+— the same script CI's `build:native` job runs, and the Makefile passes the same
+`GRAALVM_IMAGE` / `NATIVE_BUILD_IN_DOCKER=1` / `NATIVE_IMAGE_OPTIONS=-J-Xmx6g`
+that job sets, so the pinned toolchain and the builder heap cap are identical and
+a red pipeline reproduces locally with one command. (The one thing that still
+differs is where the private `hugmesh-commons` comes from: off CI there is no
+`CI_JOB_TOKEN`, so the script bind-mounts your `~/.m2` instead of resolving cold
+from the GitLab registry. Set `NATIVE_BUILD_IN_DOCKER=0` if you would rather use
+a locally installed GraalVM than the pinned image.) which compiles the binary and then **runs it** against
+a stub federation and a stub Casdoor ([`scripts/NativeSmoke.java`](scripts/NativeSmoke.java))
+in **both** shapes the pod uses:
+
+| leg | mode | asserts | covers |
+|---|---|---|---|
+| 1 | `SYNC_MODE=once` (initContainer) | the bundle's files (including a nested path) and `index.json` land on disk with the right bytes | reactive `WebClient` POST + form body, the Jackson-3 codec into the `FederationManifest`/`BundleMetadata` records, Jackson-2 `readTree` of the `manifestJson` string, `FragmentSyncRunner` ONCE + `System.exit` |
+| 2 | `SYNC_MODE=loop` (sidecar) | `/actuator/health/readiness` returns `200 UP` over HTTP, carrying `FirstSyncHealthIndicator`'s live counters | `Flux.interval`/`concatMap` under Substrate, the embedded Netty **server** (leg 1 only exercises the client), the actuator endpoint and its detail-map serialisation |
+
+If the machine has no GraalVM it builds inside `ghcr.io/graalvm/graalvm-community:25`;
+if it has neither GraalVM nor Docker it fails rather than skipping.
+
+It needs a warm `~/.m2`, for the same reason `./mvnw test` does: `net.hugmesh:hugmesh-commons`
+is private and is **not on Maven Central**. The build container runs with `HOME=/tmp`
+(so Maven never writes into the bind-mounted workspace), which also means it cannot
+see your `~/.m2` — so the script mounts it in. Run `./mvnw test` once first if yours
+is cold, or point `NATIVE_BUILD_M2` at a Maven repo that has the artifact. With no
+usable repo and no `CI_JOB_TOKEN` the script stops **before** compiling and says which
+of the two is missing; without that check the run dies half a minute later inside
+Maven as `Could not find artifact net.hugmesh:hugmesh-commons:jar:2.1.0 in central`,
+which names the one repository the artifact was never going to be in. On CI the token
+is present, so the job resolves from the GitLab registry and mounts nothing.
+
+Why the binary is *run* and not just compiled: missing native reflection metadata
+does not fail `native-image`, it fails the first time the code path executes.
+Both of these mutations of `NativeHintsConfig` were built and run, and **both
+compiled as `BUILD SUCCESS`**:
+
+* drop the `FederationManifest`/`.Remote` registrations → the binary exits 1 with
+  *"Record components not available for record class …FederationManifest"*;
+* drop the `BundleMetadata` registration → the binary exits **0**, logs
+  `1 failed` and writes nothing.
+
+The second is why the smoke test asserts files on disk and a readiness body rather
+than just an exit status: an exit-status-only check passes that mutation.
 
 Maven coordinates: `net.hugmesh:remote-fragment:0.2.0`. Java 25, Spring Boot 4.0.7, WebFlux + reactive WebClient, no database. The native profile, the `native-maven-plugin`, and `NativeHintsConfig` mirror the same pattern used by `hugmesh-federation-api` and the platform's other reactive Java services.
 
@@ -231,7 +277,8 @@ This repo builds two container images for one pod:
 
 ### Continuous integration
 
-* **`.gitlab-ci.yml`** — the pipeline used to build and publish images for the reference cluster deployment, run against an internally mirrored GitLab instance. It runs `lint → test → build → pentest` on pushes to the default branch, on tags, and (for `lint`/`test`/`pentest`) on merge requests. The `lint` stage runs `lint:deploy-manifest-drift`, which sparse-clones the central manifest from `hugmesh-generator` and byte-diffs `deploy/` against it (see [Known limitations](#known-limitations-and-design-notes)). The `test` stage runs `./mvnw verify` in a container and publishes a JUnit report; both build jobs require a green `test`. The `pentest` stage runs OWASP Dependency-Check (SCA) and an authenticated ZAP baseline scan (DAST) as non-blocking (`allow_failure: true`) informational jobs, shared from `hugmesh-generator`'s centralized pentest harness.
+* **`.gitlab-ci.yml`** — the pipeline used to build and publish images for the reference cluster deployment, run against an internally mirrored GitLab instance. It runs `lint → test → build → pentest` on pushes to the default branch and on tags; `lint`, `test` and `build:native` additionally run on **every mirrored branch push**, which is what makes them a pre-merge gate here. (The GitHub repo is pull-mirrored into that GitLab, so a GitHub pull request never becomes a GitLab merge request and a mirror-sync pipeline is always `CI_PIPELINE_SOURCE == "push"`; a `merge_request_event` rule alone can never fire for GitHub-originated work, and before the bare `$CI_COMMIT_BRANCH` rule was added a mirrored feature branch matched no rule in the file and produced no pipeline at all.) `build:sync` and `build:nginx` stay default-branch-and-tags only, because they push to the container registry. The `lint` stage runs `lint:deploy-manifest-drift`, which sparse-clones the central manifest from `hugmesh-generator` and byte-diffs `deploy/` against it (see [Known limitations](#known-limitations-and-design-notes)). The `test` stage runs `./mvnw -s settings.xml verify` in a container and publishes a JUnit report; all three build jobs `needs:` a green `test`. The `pentest` stage runs OWASP Dependency-Check (SCA) and an authenticated ZAP baseline scan (DAST) as non-blocking (`allow_failure: true`) informational jobs, shared from `hugmesh-generator`'s centralized pentest harness.
+* **`build:native`** (in the `build` stage) — compiles the GraalVM native binary in `ghcr.io/graalvm/graalvm-community:25` and then **runs it**, once as the initContainer and once as the sidecar, against a stub federation + Casdoor, so a change that breaks native compatibility fails the pipeline instead of being discovered by hand. It runs on every mirrored branch push as well as on the default branch and tags. No runner needs GraalVM installed — the toolchain comes from the image, so this needs no special runner beyond the privileged x86 one the other jobs already use. Identical to `make native` locally; both are [`scripts/native-build.sh`](scripts/native-build.sh), so a red pipeline reproduces with one command. It does not publish an image — see [Known limitations](#known-limitations-and-design-notes).
 * **`.github/workflows/release.yml`** — a manual (`workflow_dispatch`) GitHub Actions workflow for anyone building from this repository directly on GitHub. It builds and pushes both images to GHCR (`ghcr.io/hugmesh/hugmesh-remote-fragment` and `.../nginx`), tagged with the short commit SHA (or a tag you supply) plus `latest`. It is not wired to run automatically — trigger it from the Actions tab.
 * **`make pentest`** — runs the same OWASP checks locally (SCA via `owasp/dependency-check`, DAST via the shared harness in `hugmesh-generator`). Both are informational/non-blocking locally; see the [`Makefile`](Makefile) for details and opt-in flags.
 
@@ -261,7 +308,8 @@ The sync container runs as uid 1000 and nginx runs as uid 101 (the `nginx-unpriv
 * **No cross-restart pruning is needed.** The nginx root lives in an `emptyDir` that's re-derived from the manifest on every pod start, so a removed fragment is simply absent after a restart regardless of pruning; the sync's own prune step exists for the *live*, long-running loop case.
 * **Horizontal autoscaling requires a metrics-server** in the cluster. The reference Deployment ships a static replica floor that works without one; the HPA takes over scaling above that floor once metrics-server is installed.
 * **The in-repo `deploy/` Kustomize tree and `hugmesh-deploy.yaml`** are prepared for a future GitOps source (a self-hosted, Git-backed service catalog) and are not the live deployment path today — the reference cluster currently deploys from a central manifest maintained in [`hugmesh-generator`](https://github.com/hugmesh/hugmesh-generator) at `specs/cluster/manifests/remote-fragment/`. `deploy/` is a **verbatim copy** of that manifest, not a fork: there are no sanctioned local divergences, so anything repo-specific lands centrally first and is copied here after. Because nothing running today renders the copy, it cannot fail loudly on its own — so the copy is machine-checked instead. `scripts/check-deploy-drift.sh` byte-diffs `deploy/` against the central manifest in both directions and runs in CI as `lint:deploy-manifest-drift` (and locally as `make check-deploy-drift GENERATOR_ROOT=…`); with no central manifest to compare against it exits `3` (INCOMPLETE) rather than reporting a green run that verified nothing. Wiring an actual GitOps source at this repo — which would retire the copy altogether — is still future work.
-* **Native compilation isn't run in this repo's own CI.** `./mvnw -Pnative native:compile` is available via the Maven profile and the GraalVM reflection hints in `NativeHintsConfig`, but the actual native build is expected to run on CI/hosts with GraalVM installed. The default published image is the JRE-jar build from the plain `Dockerfile`.
+* **The native binary is built and run in CI, but not published as an image.** `build:native` compiles it and smoke-runs it on every mirrored branch push, the default branch and tags, so native regressions fail the pipeline. What it does *not* do is package the binary into a container: the published sync image is still the JRE-jar build from the plain `Dockerfile`, and switching it over is a deliberate, separate decision (a native image starts in ~100 ms instead of ~1.5 s and drops the JRE layer, at the cost of a much longer build and a different failure surface).
+* **The native job exists only in `.gitlab-ci.yml`, not in GitHub Actions.** It cannot usefully exist there today: this project depends on `net.hugmesh:hugmesh-commons`, which is published *only* to the org's in-cluster GitLab Maven registry (it is not on Maven Central), and a GitHub-hosted runner cannot reach that registry. A GitHub Actions native job would therefore fail at dependency resolution on every run — or, worse, be written so that it doesn't. Adding one needs either a self-hosted runner with registry access or a public mirror of `hugmesh-commons`. Note this is not specific to the native build: `release.yml` builds the same `Dockerfile` without passing the `CI_API_V4_URL`/`GITLAB_GROUP_ID` build args or the `ci_job_token` build secret, so it has the same unresolvable dependency — it is `workflow_dispatch`-only and has never been run, which is why nobody has hit it. GitLab's `build:sync` had the identical omission and *is* automatic; it was latent only because `test` could never pass, so that job never ran. Fixing `test` is what would have exposed it, so `build:sync` now passes all three explicitly (ARG and secret values are not inherited from the runner environment) — and a root [`.dockerignore`](.dockerignore) now keeps `target/`, including the ~128 MB native binary `build:native` leaves in the shared workspace, out of that build context. Worth knowing that `hugmesh-commons` is declared here for fleet-artifact alignment and is *used by no class in this repo* (see the `pom.xml` comment), so dropping it would make the whole build resolvable from Maven Central alone — but that is a fleet-wide decision, not a CI one.
 * **The service never validates the Casdoor token itself** — it only mints and forwards it. Federation, as the resource server, is responsible for validating the JWT.
 
 ## Related HugMesh projects
