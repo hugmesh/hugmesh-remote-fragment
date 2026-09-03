@@ -138,9 +138,12 @@ fi
 
 if [ "$IN_DOCKER" = "1" ]; then
   command -v docker >/dev/null 2>&1 \
-    || die "no local GraalVM (no bin/native-image under GRAALVM_HOME/JAVA_HOME, none on PATH) and no docker to fall back to.
-       Install GraalVM for JDK 25 and set GRAALVM_HOME, or install Docker so this
-       script can build in $GRAALVM_IMAGE."
+    || die "the container toolchain was selected (NATIVE_BUILD_IN_DOCKER=${NATIVE_BUILD_IN_DOCKER:-auto};
+       'auto' means no bin/native-image was found under GRAALVM_HOME/JAVA_HOME or on
+       PATH) but docker is not installed. Install Docker so this script can build in
+       $GRAALVM_IMAGE, or install GraalVM for JDK 25, set GRAALVM_HOME and re-run with
+       NATIVE_BUILD_IN_DOCKER=0 -- note that then compiles with YOUR toolchain, not
+       the pinned one CI uses."
   log "no local GraalVM -- building inside $GRAALVM_IMAGE"
   # --user keeps target/ owned by the invoking user: a root-owned build tree
   # breaks the GitLab shell executor's workspace cleanup on the next pipeline.

@@ -24,6 +24,29 @@ include:
 
 stages: [lint, test, build, pentest]
 
+# Rule set shared by the three jobs that VERIFY but publish nothing
+# (lint:deploy-manifest-drift, test, build:native).
+#
+# WHY THERE IS A BARE `$CI_COMMIT_BRANCH` RULE. The header above is the reason:
+# the GitHub repo is PULL-MIRRORED into this GitLab, so a GitHub pull request
+# never becomes a GitLab merge request, and a mirror-sync pipeline always has
+# CI_PIPELINE_SOURCE == "push". With only the first three rules a mirrored
+# feature branch matched NONE of them, and since every job in this file carried
+# the same or a stricter set, GitLab created NO PIPELINE AT ALL for it -- so the
+# earliest any of these jobs could run was after the change had already landed
+# on the default branch. For build:native that is precisely the outcome its own
+# comment calls "most of the way to not catching it at all": a post-merge canary
+# documented as a pre-merge gate. The merge_request_event rule is kept for work
+# opened directly in GitLab rather than mirrored in.
+#
+# Deliberately NOT applied to build:sync / build:nginx: those push tags into the
+# container registry and must stay default-branch + tags only.
+.verify-rules: &verify_rules
+  - if: '$CI_COMMIT_BRANCH == $CI_DEFAULT_BRANCH'
+  - if: '$CI_PIPELINE_SOURCE == "merge_request_event"'
+  - if: '$CI_COMMIT_TAG'
+  - if: '$CI_COMMIT_BRANCH'
+
 # deploy/ vs central-manifest DRIFT guard. deploy/ + hugmesh-deploy.yaml are the
 # Forgejo-cutover copy of the reference cluster's central manifest, which still
 # lives in the generator at specs/cluster/manifests/remote-fragment and stays
@@ -53,10 +76,7 @@ lint:deploy-manifest-drift:
     - git -C "${GENERATOR_ROOT}" sparse-checkout set specs/cluster/manifests/remote-fragment
   script:
     - bash scripts/check-deploy-drift.sh
-  rules:
-    - if: '$CI_COMMIT_BRANCH == $CI_DEFAULT_BRANCH'
-    - if: '$CI_PIPELINE_SOURCE == "merge_request_event"'
-    - if: '$CI_COMMIT_TAG'
+  rules: *verify_rules
 
 # JVM unit/integration tests. build:native `needs:` this job, so a test job that
 # cannot pass is a native job that never runs. Three things about the
@@ -80,11 +100,17 @@ lint:deploy-manifest-drift:
 test:
   stage: test
   tags: [hugmesh-x86, privileged]
-  rules:
-    - if: '$CI_COMMIT_BRANCH == $CI_DEFAULT_BRANCH'
-    - if: '$CI_PIPELINE_SOURCE == "merge_request_event"'
-    - if: '$CI_COMMIT_TAG'
+  rules: *verify_rules
   script:
+    # GITLAB_GROUP_ID is consumed by settings.xml (and by the Dockerfile, the
+    # Makefile and scripts/native-build.sh) and is defined NOWHERE in this repo:
+    # it has to exist as a GitLab CI/CD variable. Unset, settings.xml asks for
+    # "${CI_API_V4_URL}/groups//-/packages/maven" and Maven reports the result as
+    # a missing net.hugmesh:hugmesh-commons ARTIFACT rather than a missing
+    # VARIABLE -- the misleading error the rest of this file exists to avoid.
+    # build:native preflights all three vars inside scripts/native-build.sh;
+    # this job is the one build:native `needs:`, so it checks here.
+    - '[ -n "${GITLAB_GROUP_ID:-}" ] || { echo "GITLAB_GROUP_ID is unset. Set it as a CI/CD variable to the org group id whose GitLab Maven registry holds net.hugmesh:hugmesh-commons." >&2; exit 1; }'
     - >-
       docker run --rm
       --user "$(id -u):$(id -g)" -e HOME=/tmp
@@ -121,9 +147,11 @@ test:
 #     "1 failed" and writes nothing. Only the on-disk assertions catch that one.
 # An exit-status-only check would have passed the second mutation.
 #
-# Runs on merge requests as well as the default branch and tags: catching a
-# native regression after it has landed on main is most of the way to not
-# catching it at all. Same shell-executor + docker shape as `test`; the GraalVM
+# Runs on every mirrored branch push, on the default branch and on tags (the
+# shared *verify_rules above): catching a native regression after it has landed
+# on main is most of the way to not catching it at all, and under pull-mirroring
+# a bare $CI_COMMIT_BRANCH rule -- not merge_request_event -- is what makes this
+# fire before the merge. Same shell-executor + docker shape as `test`; the GraalVM
 # toolchain comes from the container image, so no runner needs GraalVM
 # installed. `make native` runs the identical script locally.
 build:native:
@@ -131,10 +159,7 @@ build:native:
   needs: [test]
   tags: [hugmesh-x86, privileged]
   timeout: 45m
-  rules:
-    - if: '$CI_COMMIT_BRANCH == $CI_DEFAULT_BRANCH'
-    - if: '$CI_PIPELINE_SOURCE == "merge_request_event"'
-    - if: '$CI_COMMIT_TAG'
+  rules: *verify_rules
   variables:
     GRAALVM_IMAGE: "ghcr.io/graalvm/graalvm-community:25"
     # Force the container path even if a runner happens to have GraalVM on PATH,
@@ -176,7 +201,28 @@ build:sync:
     # Immutable tag = release tag or git SHA; plus a moving branch tag the deploy/
     # kustomize can track for dev.
     - export TAG="${CI_COMMIT_TAG:-$CI_COMMIT_SHORT_SHA}"
-    - docker build --pull -t "$CI_REGISTRY_IMAGE:$TAG" -t "$CI_REGISTRY_IMAGE:$CI_COMMIT_REF_SLUG" .
+    # The Dockerfile's build stage runs `./mvnw -B -s settings.xml package`, and
+    # settings.xml interpolates ${CI_API_V4_URL} and ${GITLAB_GROUP_ID} into the
+    # gitlab-maven repository URL and authenticates with the ci_job_token secret.
+    # All three have to be handed to `docker build` explicitly -- ARG/secret
+    # values are NOT inherited from the runner's environment. Without them
+    # settings.xml resolves to ".../groups//-/packages/maven", Maven falls back
+    # to Central and the build dies with "Could not find artifact
+    # net.hugmesh:hugmesh-commons:jar:2.1.0 in central": the same failure the
+    # `test` and `build:native` jobs above are fixed/preflighted against. This
+    # was latent only because `test` could never pass, so this job never ran.
+    #
+    # The token goes in as a BuildKit SECRET, not an ARG, so it never lands in an
+    # image layer or in this job's echoed command line. `,env=` needs Docker 23+;
+    # on an older daemon it errors loudly (not silently) and the substitute is
+    # `--secret id=ci_job_token,src=/dev/stdin` with `<<<"$CI_JOB_TOKEN"` appended.
+    - '[ -n "${GITLAB_GROUP_ID:-}" ] || { echo "GITLAB_GROUP_ID is unset; the image build would report a missing ARTIFACT instead of a missing VARIABLE." >&2; exit 1; }'
+    - >-
+      DOCKER_BUILDKIT=1 docker build --pull
+      --build-arg CI_API_V4_URL="$CI_API_V4_URL"
+      --build-arg GITLAB_GROUP_ID="$GITLAB_GROUP_ID"
+      --secret id=ci_job_token,env=CI_JOB_TOKEN
+      -t "$CI_REGISTRY_IMAGE:$TAG" -t "$CI_REGISTRY_IMAGE:$CI_COMMIT_REF_SLUG" .
     - docker push "$CI_REGISTRY_IMAGE:$TAG"
     - docker push "$CI_REGISTRY_IMAGE:$CI_COMMIT_REF_SLUG"
 

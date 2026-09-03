@@ -19,9 +19,13 @@
 # with no checkout to compare against it exits 3 (INCOMPLETE) rather than
 # reporting green on an assertion that never ran.
 #
-# `make native` runs the GraalVM native build EXACTLY as CI's build:native job
-# does -- both call scripts/native-build.sh, so there is one definition of the
-# native build and a red pipeline is always reproducible here. It compiles the
+# `make native` runs the GraalVM native build as CI's build:native job does --
+# both call scripts/native-build.sh with the same three variables
+# (GRAALVM_IMAGE, NATIVE_BUILD_IN_DOCKER, NATIVE_IMAGE_OPTIONS; see below), so
+# there is one definition of the native build and a red pipeline is reproducible
+# here. What still differs off CI is where the private hugmesh-commons comes
+# from: with no CI_JOB_TOKEN the script bind-mounts your ~/.m2 instead of
+# resolving cold from the GitLab registry. It compiles the
 # binary and then RUNS it TWICE against a stub federation + Casdoor -- once as
 # the initContainer (SYNC_MODE=once, bytes on disk) and once as the sidecar
 # (SYNC_MODE=loop, /actuator/health/readiness UP over HTTP) -- because a native
@@ -44,10 +48,19 @@ SHELL := /bin/bash
 # Public images used so this matches CI without bundling a runner image.
 TEMURIN_IMAGE   ?= eclipse-temurin:25-jdk-noble
 DEPCHECK_IMAGE  ?= owasp/dependency-check:latest
-# GraalVM toolchain for `make native`, used only when the machine has no local
-# GraalVM (no bin/native-image under GRAALVM_HOME/JAVA_HOME). Same pin as the
-# build:native CI job.
+# GraalVM toolchain for `make native`. Same pin as the build:native CI job.
 GRAALVM_IMAGE   ?= ghcr.io/graalvm/graalvm-community:25
+# The other two halves of build:native's environment, so `make native` really is
+# the CI invocation rather than merely the same script. Passing GRAALVM_IMAGE
+# alone was not enough: scripts/native-build.sh defaults NATIVE_BUILD_IN_DOCKER
+# to `auto`, and `auto` picks the HOST toolchain whenever a bin/native-image is
+# found under GRAALVM_HOME/JAVA_HOME/PATH -- i.e. on exactly the developer box a
+# native regression gets triaged on, where it would also resolve from a warm
+# ~/.m2 instead of cold, and with no builder heap cap. A red pipeline caused by
+# the pinned 25 toolchain or by the 6g cap would then not reproduce here.
+# Override to 0 or auto to use a locally installed GraalVM instead.
+NATIVE_BUILD_IN_DOCKER ?= 1
+NATIVE_IMAGE_OPTIONS   ?= -J-Xmx6g
 
 # Fail the local SCA build only on a critical (CVSS>=9) finding.
 SCA_FAIL_CVSS   ?= 9
@@ -110,7 +123,7 @@ check-deploy-drift: ## Diff deploy/ against hugmesh-generator's central manifest
 	@GENERATOR_ROOT="$(GENERATOR_ROOT)" bash scripts/check-deploy-drift.sh
 
 native: ## GraalVM native build + runtime smoke test (mirrors CI's build:native)
-	@GRAALVM_IMAGE="$(GRAALVM_IMAGE)" bash scripts/native-build.sh
+	@GRAALVM_IMAGE="$(GRAALVM_IMAGE)" NATIVE_BUILD_IN_DOCKER="$(NATIVE_BUILD_IN_DOCKER)" NATIVE_IMAGE_OPTIONS="$(NATIVE_IMAGE_OPTIONS)" bash scripts/native-build.sh
 
 native-compile: ## Compile the native binary only, without the runtime smoke test
-	@GRAALVM_IMAGE="$(GRAALVM_IMAGE)" bash scripts/native-build.sh --no-smoke
+	@GRAALVM_IMAGE="$(GRAALVM_IMAGE)" NATIVE_BUILD_IN_DOCKER="$(NATIVE_BUILD_IN_DOCKER)" NATIVE_IMAGE_OPTIONS="$(NATIVE_IMAGE_OPTIONS)" bash scripts/native-build.sh --no-smoke
