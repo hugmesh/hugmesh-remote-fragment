@@ -41,6 +41,22 @@ stages: [lint, test, build, pentest]
 #
 # Deliberately NOT applied to build:sync / build:nginx: those push tags into the
 # container registry and must stay default-branch + tags only.
+#
+# CAVEAT, deliberately not pre-solved: keeping merge_request_event alongside a
+# bare branch rule is the shape that yields DUPLICATE pipelines (one branch, one
+# MR) for a branch that has an open GitLab merge request. Under pull-mirroring
+# that cannot happen -- there are no GitLab merge requests -- so no top-level
+# `workflow:` block is added here, because a mis-stated one silently produces NO
+# pipelines at all, which is a far worse failure than a duplicate. If this repo
+# ever moves to native GitLab merge requests, add GitLab's documented guard
+# BEFORE that happens:
+#   workflow:
+#     rules:
+#       - if: $CI_PIPELINE_SOURCE == "merge_request_event"
+#       - if: $CI_COMMIT_BRANCH && $CI_OPEN_MERGE_REQUESTS
+#         when: never
+#       - if: $CI_COMMIT_BRANCH
+#       - if: $CI_COMMIT_TAG      # required: CI_COMMIT_BRANCH is unset on tags
 .verify-rules: &verify_rules
   - if: '$CI_COMMIT_BRANCH == $CI_DEFAULT_BRANCH'
   - if: '$CI_PIPELINE_SOURCE == "merge_request_event"'
