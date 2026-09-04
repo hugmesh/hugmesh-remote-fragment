@@ -164,14 +164,29 @@ if [ "$IN_DOCKER" = "1" ]; then
   fi
   SMOKE_ARG=()
   if [ "$RUN_SMOKE" = "0" ]; then SMOKE_ARG=(--no-smoke); fi
+  # CI_JOB_TOKEN is passed by NAME, not as `-e CI_JOB_TOKEN=<value>`. The value
+  # form puts the token in the docker CLI's argv, i.e. in the HOST process table
+  # for the entire life of the container -- and this container is a native
+  # compile, so that is minutes, on a runner tagged `privileged` that is shared
+  # with every other repo's jobs. Measured on this box: with `-e VAR=secret`,
+  # `ps -eo args` prints `docker run --rm -e TESTSECRET=leaky-token-abc123 ...`
+  # for the whole run; with `-e VAR` the token appears nowhere in argv and still
+  # arrives intact inside the container. GitLab's variable masking only covers
+  # job LOG output, so it does not help here.
+  #
+  # Same pass-through form the `test` job in .gitlab-ci.yml already uses, and the
+  # same reasoning that makes build:sync hand the token to `docker build` as a
+  # BuildKit secret rather than a build ARG. Behaviour is unchanged for an unset
+  # variable: docker simply omits it, and every read in this script is
+  # `${VAR:-}`, so unset and empty are already treated alike.
   exec docker run --rm \
     --user "$(id -u):$(id -g)" \
     -e HOME=/tmp \
     -e NATIVE_BUILD_IN_DOCKER=0 \
     -e "NATIVE_IMAGE_OPTIONS=${NATIVE_IMAGE_OPTIONS:-}" \
-    -e "CI_JOB_TOKEN=${CI_JOB_TOKEN:-}" \
-    -e "CI_API_V4_URL=${CI_API_V4_URL:-}" \
-    -e "GITLAB_GROUP_ID=${GITLAB_GROUP_ID:-}" \
+    -e CI_JOB_TOKEN \
+    -e CI_API_V4_URL \
+    -e GITLAB_GROUP_ID \
     "${M2_MOUNT[@]}" \
     -v "${REPO_ROOT}:/workspace" \
     -w /workspace \

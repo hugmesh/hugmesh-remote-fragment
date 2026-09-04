@@ -224,25 +224,33 @@ make native-compile             # native binary only, no smoke test
 ./mvnw -Pnative native:compile  # the raw compile, if you have GraalVM on JAVA_HOME
 ```
 
-`make native` is the one to use. It runs [`scripts/native-build.sh`](scripts/native-build.sh)
-— the same script CI's `build:native` job runs, and the Makefile passes the same
-`GRAALVM_IMAGE` / `NATIVE_BUILD_IN_DOCKER=1` / `NATIVE_IMAGE_OPTIONS=-J-Xmx6g`
-that job sets, so the pinned toolchain and the builder heap cap are identical and
-a red pipeline reproduces locally with one command. (The one thing that still
-differs is where the private `hugmesh-commons` comes from: off CI there is no
-`CI_JOB_TOKEN`, so the script bind-mounts your `~/.m2` instead of resolving cold
-from the GitLab registry. Set `NATIVE_BUILD_IN_DOCKER=0` if you would rather use
-a locally installed GraalVM than the pinned image.) which compiles the binary and then **runs it** against
-a stub federation and a stub Casdoor ([`scripts/NativeSmoke.java`](scripts/NativeSmoke.java))
-in **both** shapes the pod uses:
+`make native` is the one to use. It runs [`scripts/native-build.sh`](scripts/native-build.sh),
+which compiles the binary and then **runs it** against a stub federation and a stub
+Casdoor ([`scripts/NativeSmoke.java`](scripts/NativeSmoke.java)) in **both** shapes the
+pod uses:
 
 | leg | mode | asserts | covers |
 |---|---|---|---|
 | 1 | `SYNC_MODE=once` (initContainer) | the bundle's files (including a nested path) and `index.json` land on disk with the right bytes | reactive `WebClient` POST + form body, the Jackson-3 codec into the `FederationManifest`/`BundleMetadata` records, Jackson-2 `readTree` of the `manifestJson` string, `FragmentSyncRunner` ONCE + `System.exit` |
 | 2 | `SYNC_MODE=loop` (sidecar) | `/actuator/health/readiness` returns `200 UP` over HTTP, carrying `FirstSyncHealthIndicator`'s live counters | `Flux.interval`/`concatMap` under Substrate, the embedded Netty **server** (leg 1 only exercises the client), the actuator endpoint and its detail-map serialisation |
 
+That is the same script CI's `build:native` job runs, and the Makefile passes the same
+`GRAALVM_IMAGE` / `NATIVE_BUILD_IN_DOCKER=1` / `NATIVE_IMAGE_OPTIONS=-J-Xmx6g` that job
+sets, so the pinned toolchain and the builder heap cap are identical and a red pipeline
+reproduces locally with one command. (The one thing that still differs is where the
+private `hugmesh-commons` comes from: off CI there is no `CI_JOB_TOKEN`, so the script
+bind-mounts your `~/.m2` instead of resolving cold from the GitLab registry. Set
+`NATIVE_BUILD_IN_DOCKER=0` if you would rather use a locally installed GraalVM than the
+pinned image.)
+
 If the machine has no GraalVM it builds inside `ghcr.io/graalvm/graalvm-community:25`;
 if it has neither GraalVM nor Docker it fails rather than skipping.
+
+Measured on a 28-core x86 dev box, container path, warm `~/.m2`, over three runs:
+`native-image` itself took **54 s to 1 min 24 s** (Maven total 1:01–1:37) for a
+**118 MB** binary, and both smoke legs added about **10 s** — the AOT-processed binary
+reports `Started RemoteFragmentApplication in 0.109 seconds`. The job's `timeout: 45m`
+is sized for a slower, busier shared runner resolving Maven cold, not for those numbers.
 
 It needs a warm `~/.m2`, for the same reason `./mvnw test` does: `net.hugmesh:hugmesh-commons`
 is private and is **not on Maven Central**. The build container runs with `HOME=/tmp`
@@ -254,6 +262,16 @@ of the two is missing; without that check the run dies half a minute later insid
 Maven as `Could not find artifact net.hugmesh:hugmesh-commons:jar:2.1.0 in central`,
 which names the one repository the artifact was never going to be in. On CI the token
 is present, so the job resolves from the GitLab registry and mounts nothing.
+
+The **resource** side of the native configuration needs no hand-written hints and has
+none: Spring Boot's AOT step emits it, and the generated
+`target/spring-aot/main/resources/META-INF/native-image/net.hugmesh/remote-fragment/reachability-metadata.json`
+carries the `application*.yml` glob (26 resource globs in all) alongside the four app
+records `NativeHintsConfig` registers — `FederationManifest`, `FederationManifest$Remote`,
+`BundleMetadata` and `FragmentSyncService$SyncResult`, each with
+`allDeclaredConstructors`/`allDeclaredFields`/`allDeclaredMethods`. Both smoke legs read
+their whole configuration out of `application.yml`, so a dropped resource glob fails the
+gate the same way a dropped reflection hint does.
 
 Why the binary is *run* and not just compiled: missing native reflection metadata
 does not fail `native-image`, it fails the first time the code path executes.
@@ -268,6 +286,13 @@ compiled as `BUILD SUCCESS`**:
 The second is why the smoke test asserts files on disk and a readiness body rather
 than just an exit status: an exit-status-only check passes that mutation.
 
+Re-verified independently on 2026-09-04 by re-applying the `BundleMetadata` mutation:
+`native-image` reported `BUILD SUCCESS` (with 7,471 types registered for reflection
+against 7,529 unmutated, so the mutation demonstrably reached the image), the binary
+exited **0** logging `[sync] done: 1 fragment(s) [0 synced, 0 deduped, 0 skipped, 1 failed]`,
+and the gate went red only on the disk assertion — `[smoke] FAIL: expected synced file
+missing: …/_fragments/smoke-ui/…/remoteEntry.json`, `make` exit 2.
+
 Maven coordinates: `net.hugmesh:remote-fragment:0.2.0`. Java 25, Spring Boot 4.0.7, WebFlux + reactive WebClient, no database. The native profile, the `native-maven-plugin`, and `NativeHintsConfig` mirror the same pattern used by `hugmesh-federation-api` and the platform's other reactive Java services.
 
 This repo builds two container images for one pod:
@@ -278,7 +303,7 @@ This repo builds two container images for one pod:
 ### Continuous integration
 
 * **`.gitlab-ci.yml`** — the pipeline used to build and publish images for the reference cluster deployment, run against an internally mirrored GitLab instance. It runs `lint → test → build → pentest` on pushes to the default branch and on tags; `lint`, `test` and `build:native` additionally run on **every mirrored branch push**, which is what makes them a pre-merge gate here. (The GitHub repo is pull-mirrored into that GitLab, so a GitHub pull request never becomes a GitLab merge request and a mirror-sync pipeline is always `CI_PIPELINE_SOURCE == "push"`; a `merge_request_event` rule alone can never fire for GitHub-originated work, and before the bare `$CI_COMMIT_BRANCH` rule was added a mirrored feature branch matched no rule in the file and produced no pipeline at all.) `build:sync` and `build:nginx` stay default-branch-and-tags only, because they push to the container registry. The `lint` stage runs `lint:deploy-manifest-drift`, which sparse-clones the central manifest from `hugmesh-generator` and byte-diffs `deploy/` against it (see [Known limitations](#known-limitations-and-design-notes)). The `test` stage runs `./mvnw -s settings.xml verify` in a container and publishes a JUnit report; all three build jobs `needs:` a green `test`. The `pentest` stage runs OWASP Dependency-Check (SCA) and an authenticated ZAP baseline scan (DAST) as non-blocking (`allow_failure: true`) informational jobs, shared from `hugmesh-generator`'s centralized pentest harness.
-* **`build:native`** (in the `build` stage) — compiles the GraalVM native binary in `ghcr.io/graalvm/graalvm-community:25` and then **runs it**, once as the initContainer and once as the sidecar, against a stub federation + Casdoor, so a change that breaks native compatibility fails the pipeline instead of being discovered by hand. It runs on every mirrored branch push as well as on the default branch and tags. No runner needs GraalVM installed — the toolchain comes from the image, so this needs no special runner beyond the privileged x86 one the other jobs already use. Identical to `make native` locally; both are [`scripts/native-build.sh`](scripts/native-build.sh), so a red pipeline reproduces with one command. It does not publish an image — see [Known limitations](#known-limitations-and-design-notes).
+* **`build:native`** (in the `build` stage) — compiles the GraalVM native binary in `ghcr.io/graalvm/graalvm-community:25` and then **runs it**, once as the initContainer and once as the sidecar, against a stub federation + Casdoor, so a change that breaks native compatibility fails the pipeline instead of being discovered by hand. It runs on every mirrored branch push as well as on the default branch and tags. No runner needs GraalVM installed — the toolchain comes from the image, so this needs no special runner beyond the privileged x86 one the other jobs already use. Identical to `make native` locally; both are [`scripts/native-build.sh`](scripts/native-build.sh), so a red pipeline reproduces with one command. That script hands `CI_JOB_TOKEN` to the build container **by name** (`docker run -e CI_JOB_TOKEN`) rather than as `-e CI_JOB_TOKEN=<value>`: the value form puts the token in the docker CLI's argv and therefore in the host process table for the whole compile, which on a shared `privileged` runner is readable by every other repo's jobs (GitLab's masking only covers job *log* output). Same reasoning as `build:sync` passing it as a BuildKit secret instead of a build ARG. It does not publish an image — see [Known limitations](#known-limitations-and-design-notes).
 * **`.github/workflows/release.yml`** — a manual (`workflow_dispatch`) GitHub Actions workflow for anyone building from this repository directly on GitHub. It builds and pushes both images to GHCR (`ghcr.io/hugmesh/hugmesh-remote-fragment` and `.../nginx`), tagged with the short commit SHA (or a tag you supply) plus `latest`. It is not wired to run automatically — trigger it from the Actions tab.
 * **`make pentest`** — runs the same OWASP checks locally (SCA via `owasp/dependency-check`, DAST via the shared harness in `hugmesh-generator`). Both are informational/non-blocking locally; see the [`Makefile`](Makefile) for details and opt-in flags.
 
