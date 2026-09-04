@@ -147,9 +147,12 @@ if [ "$IN_DOCKER" = "1" ]; then
   log "no local GraalVM -- building inside $GRAALVM_IMAGE"
   # --user keeps target/ owned by the invoking user: a root-owned build tree
   # breaks the GitLab shell executor's workspace cleanup on the next pipeline.
-  # HOME=/tmp keeps the Maven repo OUT of the bind-mounted project dir -- this
-  # repo has no .dockerignore, so a .m2 under the workspace would be swept into
-  # the `docker build` context of the image jobs.
+  # HOME=/tmp keeps the Maven repo OUT of the bind-mounted project dir: the
+  # shell executor's workspace is shared by test, build:native and build:sync,
+  # and a ~500 MB .m2 in it is left for the next pipeline to trip over. The root
+  # .dockerignore does also exclude `.m2/` from the image jobs' `docker build`
+  # context, so that is belt-and-braces -- what is wanted here is workspace
+  # hygiene, not just a clean build context.
   # The container's HOME is /tmp, so /tmp/.m2 is the Maven repo it will use.
   # With a CI_JOB_TOKEN we mount nothing and let the pipeline resolve cold from
   # the GitLab registry; without one, the host repo is the only place
@@ -165,14 +168,27 @@ if [ "$IN_DOCKER" = "1" ]; then
   SMOKE_ARG=()
   if [ "$RUN_SMOKE" = "0" ]; then SMOKE_ARG=(--no-smoke); fi
   # CI_JOB_TOKEN is passed by NAME, not as `-e CI_JOB_TOKEN=<value>`. The value
-  # form puts the token in the docker CLI's argv, i.e. in the HOST process table
-  # for the entire life of the container -- and this container is a native
-  # compile, so that is minutes, on a runner tagged `privileged` that is shared
-  # with every other repo's jobs. Measured on this box: with `-e VAR=secret`,
-  # `ps -eo args` prints `docker run --rm -e TESTSECRET=leaky-token-abc123 ...`
-  # for the whole run; with `-e VAR` the token appears nowhere in argv and still
-  # arrives intact inside the container. GitLab's variable masking only covers
-  # job LOG output, so it does not help here.
+  # form puts the token in the docker CLI's argv, i.e. in the WORLD-READABLE
+  # host process table for the entire life of the container -- and this
+  # container is a native compile, so that is minutes, on a runner tagged
+  # `privileged`. Measured on this box: with `-e VAR=secret`, `ps -eo args`
+  # prints `docker run --rm -e TESTSECRET=leaky-token-abc123 ...` for the whole
+  # run; with `-e VAR` the token appears nowhere in argv and still arrives
+  # intact inside the container. GitLab's variable masking only covers job LOG
+  # output, so it does not help here.
+  #
+  # SCOPE -- what this does NOT close, also measured here, so nobody reads more
+  # into it than it earns. A sibling job on the SAME runner can still get the
+  # value two ways while the compile runs: `docker inspect <cid> --format
+  # '{{json .Config.Env}}'` prints it verbatim, and every job in this pipeline
+  # has docker access (that is how test, build:native and build:sync all work);
+  # and /proc/<docker-cli-pid>/environ is mode 0400 owned by the invoking user,
+  # which on a GitLab *shell* executor is the one `gitlab-runner` uid shared by
+  # all jobs. Closing those needs a different mechanism -- a file-based secret,
+  # or a rootless/isolated executor -- not a different `-e` form. What the
+  # pass-through form does buy is real: it takes the token out of a channel that
+  # every local user, every `ps` scraper and every process-table monitor can
+  # read, and costs nothing.
   #
   # Same pass-through form the `test` job in .gitlab-ci.yml already uses, and the
   # same reasoning that makes build:sync hand the token to `docker build` as a
