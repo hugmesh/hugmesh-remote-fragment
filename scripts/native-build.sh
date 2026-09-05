@@ -94,7 +94,9 @@ cd "$REPO_ROOT"
 #          GITLAB_GROUP_ID must BOTH be non-empty: settings.xml interpolates
 #          them into the URL, and an empty group id yields
 #          ".../groups//-/packages/maven", which 404s and is then reported as
-#          a missing ARTIFACT rather than a missing VARIABLE.
+#          a missing ARTIFACT rather than a missing VARIABLE. CI_API_V4_URL
+#          must also be https (or an http loopback) -- Maven 3.8+ blocks plain
+#          http repositories and blames a "mirror" for it.
 #
 #   dev -- no CI_JOB_TOKEN. The artifact is in the developer's ~/.m2 (that is
 #          how a plain `./mvnw test` resolves it here), so the host repo is
@@ -111,6 +113,32 @@ preflight_commons() {
       || die "CI_JOB_TOKEN is set but CI_API_V4_URL is empty. settings.xml builds the
        registry URL out of both, and an empty one resolves to a 404 that Maven
        then reports as a missing net.hugmesh:hugmesh-commons artifact."
+    # ...and non-empty is not enough: it has to be https. Maven 3.8+ ships a
+    # `maven-default-http-blocker` mirror that blocks EVERY plain-http repository
+    # except localhost, so an http CI_API_V4_URL cannot resolve anything -- and it
+    # fails in exactly the misleading shape this preflight exists to prevent.
+    # Measured here, before this check existed, with an http URL:
+    #   "Could not transfer artifact net.hugmesh:hugmesh-commons:pom:2.1.0 from/to
+    #    maven-default-http-blocker (http://0.0.0.0/): Blocked mirror for
+    #    repositories: [gitlab-maven (http://...)]"
+    # -- an error naming a MIRROR nobody configured, said in the vocabulary of
+    # Maven's internals rather than of the CI variable that is actually wrong.
+    # This job has never executed on a real runner (see the README), so if the
+    # in-cluster GitLab publishes an http CI_API_V4_URL, that is what its first
+    # ever run would print. Cheap to say plainly instead.
+    case "${CI_API_V4_URL:-}" in
+      https://*) ;;
+      # Maven's blocker exempts localhost, so an http loopback URL genuinely works.
+      http://localhost|http://localhost/*|http://localhost:*) ;;
+      http://127.0.0.1|http://127.0.0.1/*|http://127.0.0.1:*) ;;
+      'http://[::1]'|'http://[::1]/'*|'http://[::1]:'*) ;;
+      *) die "CI_API_V4_URL is \"${CI_API_V4_URL:-}\", which is not https (and not an
+       http loopback). Maven 3.8+ blocks every plain-http repository that is not
+       localhost via maven-default-http-blocker, so hugmesh-commons would fail to
+       resolve with \"Blocked mirror for repositories: [gitlab-maven (...)]\" -- an
+       error that names a mirror nobody configured. Point CI_API_V4_URL at the
+       https GitLab API endpoint." ;;
+    esac
     [ -n "${GITLAB_GROUP_ID:-}" ] \
       || die "CI_JOB_TOKEN is set but GITLAB_GROUP_ID is empty, so settings.xml would
        ask for \"\${CI_API_V4_URL}/groups//-/packages/maven\". Set GITLAB_GROUP_ID

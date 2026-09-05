@@ -186,11 +186,16 @@ build:native:
     NATIVE_IMAGE_OPTIONS: "-J-Xmx6g"
     # NATIVE_BUILD_M2 is deliberately NOT set. The script's fallback is a
     # throwaway Maven repo under HOME=/tmp inside the container, so every
-    # pipeline resolves cold -- slower, but the alternative is a .m2 cached
-    # under CI_PROJECT_DIR, and this repo has no .dockerignore, so that cache
-    # would be swept into the `docker build` context of build:sync/build:nginx
-    # (same stage, same shell-executor workspace). Add a .dockerignore first if
-    # you want to cache here.
+    # pipeline resolves cold -- slower, but the alternative is a ~500 MB .m2
+    # cached under CI_PROJECT_DIR, which test, build:native and build:sync all
+    # share as ONE shell-executor workspace. The root .dockerignore added in this
+    # same series does exclude `.m2/` (and `target/`), so such a cache would no
+    # longer be swept into the `docker build` context of build:sync/build:nginx
+    # -- that half of the objection is closed. What is NOT closed is workspace
+    # hygiene: the cache would still be left behind for the next pipeline, and
+    # this file pins neither GIT_STRATEGY nor GIT_CLEAN_FLAGS, so relying on
+    # GitLab's default -ffdx to sweep it is an unstated dependency on runner
+    # config. Cache here only if you pin those too.
     #
     # Cold resolution is only viable BECAUSE this job has a CI_JOB_TOKEN: the
     # one dependency that is not on Maven Central, net.hugmesh:hugmesh-commons,
@@ -201,7 +206,11 @@ build:native:
     # CI_JOB_TOKEN / CI_API_V4_URL / GITLAB_GROUP_ID before compiling, because
     # an empty GITLAB_GROUP_ID silently builds the URL ".../groups//-/packages/
     # maven" and Maven then reports the result as a missing ARTIFACT rather than
-    # a missing VARIABLE.
+    # a missing VARIABLE. It also asserts CI_API_V4_URL is https (or an http
+    # loopback): Maven 3.8+ blocks plain-http repositories and reports it as a
+    # "Blocked mirror" nobody configured -- the same misleading-error class,
+    # and this job has never run on a real runner, so it would be its first
+    # ever output if this GitLab publishes an http API URL.
   script:
     - bash scripts/native-build.sh
 
