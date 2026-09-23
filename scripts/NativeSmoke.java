@@ -111,9 +111,9 @@ public final class NativeSmoke {
         // single dispatcher thread is fine on an idle box and starves on a busy
         // CI runner: measured on this host at load average 98, the binary's
         // token POST came back "Connection prematurely closed BEFORE response"
-        // and the gate went red for a reason that had nothing to do with the
-        // native image. A flaky gate gets muted, and a muted gate is an inert
-        // gate -- which is the failure this whole job exists to avoid.
+        // and the gate failed for a reason that had nothing to do with the
+        // native image. A flaky gate gets muted, and a muted gate catches
+        // nothing -- which is the failure this whole job exists to avoid.
         HttpServer stub = HttpServer.create(new InetSocketAddress("127.0.0.1", 0), 64);
         stub.createContext("/", NativeSmoke::route);
         ExecutorService stubPool = Executors.newFixedThreadPool(8, r -> {
@@ -200,7 +200,8 @@ public final class NativeSmoke {
         env.put("SYNC_INTERVAL", "PT5S");
         // Force the health DETAILS into the response body so the readiness
         // payload really serialises FirstSyncHealthIndicator's counters rather
-        // than collapsing to a bare {"status":"UP"} that would pass vacuously.
+        // than collapsing to a bare {"status":"UP"} that would pass without
+        // checking anything.
         env.put("MANAGEMENT_ENDPOINT_HEALTH_SHOW_DETAILS", "always");
 
         System.out.println("[smoke] running " + binary + " (SYNC_MODE=loop, target=" + root + ")");

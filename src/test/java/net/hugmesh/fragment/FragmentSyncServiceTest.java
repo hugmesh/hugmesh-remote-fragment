@@ -18,7 +18,7 @@ import static org.assertj.core.api.Assertions.assertThat;
 
 /**
  * Drives the REAL {@link FragmentSyncService} against a {@link FederationStub}
- * (recording ExchangeFunction) and a temp filesystem. Asserts the load-bearing
+ * (recording ExchangeFunction) and a temp filesystem. Asserts the core
  * behaviours: kind filter, content-addressed write, dedupe (no re-fetch), prune of
  * a vanished fragment, single-bad-bundle resilience, multi-file manifestJson, and
  * the index.json.

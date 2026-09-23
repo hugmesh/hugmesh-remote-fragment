@@ -64,7 +64,7 @@ public class FederationSyncClient {
     }
 
     /**
-     * Test seam — inject a pre-built {@link WebClient} (e.g.
+     * Test-only constructor — inject a pre-built {@link WebClient} (e.g.
      * backed by a stub exchange).
      *
      * @param webClient   pre-configured WebClient; request URIs in

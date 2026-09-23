@@ -122,7 +122,7 @@ public class CasdoorTokenClient {
     }
 
     /**
-     * Test seam — inject a pre-built {@link WebClient} (e.g. backed
+     * Test-only constructor — inject a pre-built {@link WebClient} (e.g. backed
      * by a stub exchange). {@code tokenUrl} is used as the absolute
      * request URI.
      *

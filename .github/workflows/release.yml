@@ -1,7 +1,7 @@
 name: release
 
-# Manual-only release build. Deliberately NOT wired to push/tags — this stays fully
-# inert until a human enables it. Mirrors the two image build jobs in this repo's
+# Manual-only release build. Deliberately NOT wired to push/tags — stays disabled
+# until a human enables it. Mirrors the two image build jobs in this repo's
 # .gitlab-ci.yml (build:sync + build:nginx), but publishes to GHCR instead of the
 # in-cluster GitLab registry.
 on:

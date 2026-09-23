@@ -22,11 +22,11 @@
 # `make native` runs the GraalVM native build as CI's build:native job does --
 # both call scripts/native-build.sh with the same three variables
 # (GRAALVM_IMAGE, NATIVE_BUILD_IN_DOCKER, NATIVE_IMAGE_OPTIONS; see below), so
-# there is one definition of the native build and a red pipeline is reproducible
-# here. What still differs off CI is where the private hugmesh-commons comes
-# from: with no CI_JOB_TOKEN the script bind-mounts your ~/.m2 instead of
-# resolving cold from the GitLab registry. It compiles the
-# binary and then RUNS it TWICE against a stub federation + Casdoor -- once as
+# there is one definition of the native build and a failed pipeline is
+# reproducible here. What still differs off CI is where the private
+# hugmesh-commons comes from: with no CI_JOB_TOKEN the script bind-mounts your
+# ~/.m2 instead of resolving cold from the GitLab registry. The script compiles
+# the binary and then RUNS it TWICE against a stub federation + Casdoor -- once as
 # the initContainer (SYNC_MODE=once, bytes on disk) and once as the sidecar
 # (SYNC_MODE=loop, /actuator/health/readiness UP over HTTP) -- because a native
 # image that merely compiles proves almost nothing: missing reflection metadata
