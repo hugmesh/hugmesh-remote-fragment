@@ -9,16 +9,15 @@
 #
 # byte for byte, in both directions.
 #
-# WHY THIS EXISTS. `deploy/` + hugmesh-deploy.yaml are the Forgejo-cutover half of
-# a DUAL-HOME arrangement: the authoritative manifest still lives in
-# hugmesh-generator, and `deploy/` is a hand-maintained copy of it that the live
-# GitHub-rooted ArgoCD does not read. Nothing forced the two apart to stay
-# together, and they drifted — silently, because the dark copy is never rendered
-# by anything that runs. Three ways, all shipped:
+# WHY THIS EXISTS. `deploy/` + hugmesh-deploy.yaml are one half of a DUAL-HOME
+# arrangement, kept for the planned switch to a Forgejo-hosted catalog: the
+# authoritative manifest still lives in hugmesh-generator, and `deploy/` is a
+# hand-maintained copy of it that the live GitHub-rooted ArgoCD does not read.
+# Nothing renders the copy, so it drifted silently. Three ways, all shipped:
 #
 #   * hugmesh-generator added a PodDisruptionBudget to every HA (HPA
 #     minReplicas: 2) workload. `deploy/` got neither pdb.yaml nor the
-#     `resources:` entry, so a cutover would have quietly deployed this HA pair
+#     `resources:` entry, so the switch would have quietly deployed this HA pair
 #     with NO disruption budget — a node drain could take both pods at once.
 #     `kubectl kustomize deploy/` still exited 0; it just rendered one kind fewer.
 #   * hugmesh-generator migrated the in-cluster registry from GitLab to Harbor.
@@ -28,8 +27,8 @@
 #     centrally; `deploy/nginx.conf` still named the dead one.
 #
 # A missing resource is the dangerous shape: kustomize cannot report the absence
-# of a file nobody listed, so the only signal a dark copy can ever produce is a
-# diff against its source. Hence this gate.
+# of a file nobody listed, so the only signal an unrendered copy can ever
+# produce is a diff against its source. Hence this gate.
 #
 # CONTRACT. `deploy/` is a VERBATIM copy — there are no sanctioned local
 # divergences, so the comparison needs no allowlist and no exceptions. Anything

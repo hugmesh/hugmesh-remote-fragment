@@ -14,18 +14,16 @@
 #      SYNC_MODE=once (bytes on disk) and SYNC_MODE=loop (readiness UP over
 #      HTTP) -- and asserts what each one is supposed to produce.
 #
-# Step 3 is the point. A native image that only COMPILES proves very little:
-# missing reflection/resource metadata does not fail the build, it fails the
-# first time the code path runs. Measured on two mutations of
-# NativeHintsConfig, BOTH of which native-image reported as BUILD SUCCESS:
-#   * without the FederationManifest hints the binary exits 1 with
-#     "Record components not available for record class ...FederationManifest";
-#   * without the BundleMetadata hint it exits 0, logs "1 failed" and writes
-#     nothing -- so only the on-disk assertions catch it.
+# Step 3 is essential. A native image that only compiles proves very little:
+# missing reflection/resource metadata does not fail native-image, it fails at
+# first execution. Measured on two mutations of NativeHintsConfig:
+#   * without the FederationManifest hints: binary exits 1 with
+#     "Record components not available for record class ...FederationManifest"
+#   * without the BundleMetadata hint: binary exits 0, logs "1 failed", writes
+#     nothing — only the on-disk assertions catch it.
 #
-# There is NO skip path. Missing GraalVM, missing Docker, a failed compile or a
-# failed smoke run all exit non-zero. An "it could not run so it passed" branch
-# is exactly how a CI job goes inert.
+# No skip path: all failures (missing GraalVM/Docker, compile/smoke run failure)
+# exit non-zero.
 #
 # Usage:
 #   scripts/native-build.sh [--no-smoke]

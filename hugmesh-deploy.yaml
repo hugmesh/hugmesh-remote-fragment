@@ -5,19 +5,20 @@
 # scans the in-cluster Forgejo org for repos carrying THIS file + a `deploy/`
 # kustomize dir and generates one ArgoCD Application (source path: deploy/).
 #
-# DUAL-HOME / SHIPS DARK: the central manifest still lives at
+# DUAL-HOME / NOT YET ACTIVE: the central manifest still lives at
 # hugmesh-generator specs/cluster/manifests/remote-fragment/ and remains the
-# authoritative source today. This file + deploy/ are a Forgejo-cutover step:
-# the live GitHub-rooted ArgoCD ignores it, and the (currently unseeded) Forgejo
-# catalog matches nothing, so it changes nothing running. deploy/ is a verbatim
-# copy of the central manifest — keep the two in sync until cutover.
+# authoritative source today. This file + deploy/ are a step towards the planned
+# switch to a Forgejo-hosted catalog: the live GitHub-rooted ArgoCD ignores it,
+# and the (currently unseeded) Forgejo catalog matches nothing, so it changes
+# nothing running. deploy/ is a verbatim copy of the central manifest — keep the
+# two in sync until that switch.
 #
-# THAT SYNC IS NOW ENFORCED, because being dark is exactly what let it rot: a
-# copy nothing renders drifts in silence, and kustomize cannot report a resource
-# nobody listed. scripts/check-deploy-drift.sh byte-diffs deploy/ against the
-# central manifest both ways; CI runs it as lint:deploy-manifest-drift. If you
-# change deploy/, change the central manifest in the same breath (or the other
-# way round) — the gate fails on either half landing alone.
+# THAT SYNC IS NOW ENFORCED, because being unused is exactly what let it go
+# stale: a copy nothing renders drifts in silence, and kustomize cannot report a
+# resource nobody listed. scripts/check-deploy-drift.sh byte-diffs deploy/
+# against the central manifest both ways; CI runs it as lint:deploy-manifest-drift.
+# If you change deploy/, change the central manifest in the same breath (or the
+# other way round) — the gate fails on either half landing alone.
 #
 # NOTE: the deploy/ kustomize also materializes the nginx config (nginx.conf ->
 # ConfigMap remote-fragment-nginx via configMapGenerator, disableNameSuffixHash)
