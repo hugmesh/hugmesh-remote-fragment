@@ -30,7 +30,11 @@ spec:
   # >=2 replicas: stateless static servers of the current enabled-fragment set.
   # The HPA (hpa.yaml) owns scaling above this floor; replicas:2 is a static floor
   # that works even before metrics-server is installed (see hpa.yaml note).
-  replicas: 2
+  # replicas is deliberately UNSET: the HorizontalPodAutoscaler below owns it.
+  # Pinning it here made ArgoCD and the HPA fight forever — the HPA scaled to
+  # minReplicas, ArgoCD saw drift and wrote it back, round and round. Measured
+  # 2026-08-22 on kind: seven Deployments at generation ~950-964 after 38h,
+  # one rewrite every ~2.4 minutes, and the Applications never left OutOfSync.
   selector: { matchLabels: { app: hugmesh-remote-fragment } }
   template:
     metadata: { labels: { app: hugmesh-remote-fragment } }
