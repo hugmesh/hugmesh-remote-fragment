@@ -13,7 +13,9 @@
 # on a GitLab default. Excluding it here does not depend on runner config.
 #
 # Keep .mvn/, mvnw, pom.xml, settings.xml and src/ -- the build stage runs
-# `./mvnw -B -s settings.xml package` and needs all five.
+# `./mvnw -B -s settings.xml package` and needs all five. It also needs
+# .github/maven-ci-settings.xml when the release workflow selects the GitHub Packages path
+# (see the Dockerfile), hence the exception below.
 
 # Maven output, including the native binary build:native leaves behind.
 target/
@@ -36,7 +38,8 @@ out/
 nginx/
 deploy/
 hugmesh-deploy.yaml
-.github/
+.github/*
+!.github/maven-ci-settings.xml
 .gitlab-ci.yml
 
 # Secrets and local overrides must never reach the daemon.

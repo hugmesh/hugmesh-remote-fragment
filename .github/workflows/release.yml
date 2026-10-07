@@ -18,7 +18,53 @@ env:
   NGINX_IMAGE: ghcr.io/hugmesh/hugmesh-remote-fragment/nginx
 
 jobs:
+  preflight:
+    runs-on: ubuntu-latest
+    steps:
+      # PREFLIGHT, cross-repo package read. Fails here, by name, instead of deep inside Maven.
+      # The net.hugmesh libraries live in the PRIVATE GitHub Packages registries of the chain
+      # repositories. The automatic GITHUB_TOKEN cannot read another repository's package, so
+      # this job needs the PACKAGES_READ_TOKEN secret (a classic PAT with read:packages,
+      # decision 90a = B in hugmesh-commons/RELEASING.md). There is deliberately NO fall-back to
+      # GITHUB_TOKEN: it cannot work, and an unset secret would otherwise select the dead
+      # GitLab settings.xml and fail as "Non-resolvable parent POM ... /groups//".
+      - name: Preflight, cross-repo package read
+        env:
+          UPSTREAM_PACKAGES_ACTOR: ${{ secrets.PACKAGES_READ_ACTOR || github.actor }}
+          UPSTREAM_PACKAGES_TOKEN: ${{ secrets.PACKAGES_READ_TOKEN }}
+        run: |
+          set -uo pipefail
+          if [ -z "${UPSTREAM_PACKAGES_TOKEN}" ]; then
+            echo "::error::secret PACKAGES_READ_TOKEN is not set for this repository. Set it under Settings -> Secrets and variables -> Actions (or share the org secret with this repository): a classic personal access token with the read:packages scope. The automatic GITHUB_TOKEN cannot read another repository's packages, so there is no fall-back."
+            exit 1
+          fi
+          rc=0
+          for upstream in hugmesh-build-config hugmesh-parent hugmesh-commons; do
+            url="https://maven.pkg.github.com/hugmesh/${upstream}/net/hugmesh/${upstream}/maven-metadata.xml"
+            code=$(curl -sS -o /dev/null -w '%{http_code}' -u "${UPSTREAM_PACKAGES_ACTOR}:${UPSTREAM_PACKAGES_TOKEN}" "${url}" || echo 000)
+            case "${code}" in
+              200)
+                echo "  readable    hugmesh/${upstream}"
+                ;;
+              401|403)
+                echo "::error::CANNOT AUTHENTICATE to hugmesh/${upstream} (HTTP ${code}). This is NOT 'the upstream is unpublished': PACKAGES_READ_TOKEN cannot read that repository's Maven registry. It must be a classic PAT with read:packages, not expired, from an account that can read the repository."
+                rc=1
+                ;;
+              404)
+                echo "::error::NOT READABLE at hugmesh/${upstream} (HTTP 404). Two causes look identical: (a) nothing is published to that registry yet (run the release chain: build-config, parent, commons, auth-core), or (b) it is published and this credential cannot see it, because GitHub masks an unauthorised read of a private package as 404. Look at the package page before re-publishing anything."
+                rc=1
+                ;;
+              *)
+                echo "::error::unexpected HTTP ${code} from hugmesh/${upstream}. Not classified, do not assume 'unpublished'."
+                rc=1
+                ;;
+            esac
+          done
+          exit ${rc}
+
+
   build-sync:
+    needs: preflight
     runs-on: ubuntu-latest
     permissions:
       contents: read
@@ -49,9 +95,15 @@ jobs:
           context: .
           file: Dockerfile
           push: true
+          build-args: |
+            UPSTREAM_PACKAGES_ACTOR=${{ secrets.PACKAGES_READ_ACTOR || github.actor }}
+          # BuildKit secret (never an ARG/ENV): selects .github/maven-ci-settings.xml, i.e.
+          # the net.hugmesh libraries come from GitHub Packages. See the Dockerfile.
+          secrets: |
+            packages_read_token=${{ secrets.PACKAGES_READ_TOKEN }}
           tags: |
             ${{ env.SYNC_IMAGE }}:${{ steps.vars.outputs.tag }}
-            ${{ env.SYNC_IMAGE }}:latest
+            ${{ github.ref == 'refs/heads/main' && format('{0}:latest', env.SYNC_IMAGE) || '' }}
 
   build-nginx:
     runs-on: ubuntu-latest
@@ -86,4 +138,4 @@ jobs:
           push: true
           tags: |
             ${{ env.NGINX_IMAGE }}:${{ steps.vars.outputs.tag }}
-            ${{ env.NGINX_IMAGE }}:latest
+            ${{ github.ref == 'refs/heads/main' && format('{0}:latest', env.NGINX_IMAGE) || '' }}
