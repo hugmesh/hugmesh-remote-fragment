@@ -4,6 +4,20 @@ name: release
 # until a human enables it. Mirrors the two image build jobs in this repo's
 # .gitlab-ci.yml (build:sync + build:nginx), but publishes to GHCR instead of the
 # in-cluster GitLab registry.
+#
+# build-sync compiles a Java project that depends on net.hugmesh:hugmesh-commons, which is
+# not on Maven Central. It resolves it from GitHub Packages (settings-github.xml, selected
+# by the MAVEN_SETTINGS build arg), which needs the net.hugmesh chain to be published
+# first (hugmesh-build-config -> hugmesh-parent -> hugmesh-commons, see
+# hugmesh-auth-core/RELEASING.md section 6) and a credential that can READ those packages:
+# secrets.PACKAGES_READ_TOKEN (classic PAT, read:packages; operator decision 90a = B, kept
+# after launch), falling back to the automatic GITHUB_TOKEN, which can only read another
+# repository's package if that package grants this repository access. The "Preflight"
+# step names an authorisation failure as one instead of Maven's misleading "Could not
+# find artifact". This workflow publishes images only. It publishes no jar or pom.
+#
+# The :latest tag is applied only when the run is on the default branch, so a dispatch
+# from a feature branch cannot move :latest to unmerged code.
 on:
   workflow_dispatch:
     inputs:
@@ -43,15 +57,87 @@ jobs:
       - name: Set up Docker Buildx
         uses: docker/setup-buildx-action@v3
 
+      # PREFLIGHT. The Maven step inside the Docker build resolves artifacts published from
+      # OTHER repositories. If the credential cannot read them, Maven reports "Could not find
+      # artifact net.hugmesh:hugmesh-commons", the same words as "not published yet". Probe
+      # the registries first, with the exact credential the build will use, and name the
+      # failure correctly. GitHub answers an unauthorised read of a private package with 404,
+      # so a 404 is reported as ambiguous, not as "unpublished".
+      - name: Preflight - GitHub Packages read
+        env:
+          UPSTREAM_PACKAGES_ACTOR: ${{ secrets.PACKAGES_READ_ACTOR || github.actor }}
+          UPSTREAM_PACKAGES_TOKEN: ${{ secrets.PACKAGES_READ_TOKEN || secrets.GITHUB_TOKEN }}
+          HAS_PACKAGES_READ_TOKEN: ${{ secrets.PACKAGES_READ_TOKEN != '' }}
+        run: |
+          set -uo pipefail
+          if [ "${HAS_PACKAGES_READ_TOKEN}" = "true" ]; then
+            echo "read credential: secrets.PACKAGES_READ_TOKEN (operator-held PAT)"
+          else
+            echo "read credential: the automatic secrets.GITHUB_TOKEN. It can read another"
+            echo "repository's package only if that package grants this repository access."
+            echo "The durable fix is the PACKAGES_READ_TOKEN org secret (hugmesh-auth-core/RELEASING.md 6.2)."
+          fi
+          commons_version=$(grep -A1 '<artifactId>hugmesh-commons</artifactId>' pom.xml | sed -n 's|.*<version>\(.*\)</version>.*|\1|p' | head -n1)
+          if [ -z "${commons_version}" ]; then
+            echo "::error::could not read the hugmesh-commons version from pom.xml"
+            exit 1
+          fi
+          probe() { # $1 repo, $2 artifact, $3 version, $4 output file
+            curl -sS -L -o "$4" -w '%{http_code}' \
+              -u "${UPSTREAM_PACKAGES_ACTOR}:${UPSTREAM_PACKAGES_TOKEN}" \
+              "https://maven.pkg.github.com/hugmesh/$1/net/hugmesh/$2/$3/$2-$3.pom" || echo 000
+          }
+          explain() { # $1 http code, $2 what
+            case "$1" in
+              401|403)
+                echo "::error::CANNOT AUTHENTICATE to read $2 (HTTP $1). This is NOT 'unpublished'. The credential cannot read that repository's Maven registry. Fix: create the PACKAGES_READ_TOKEN org secret (classic PAT, read:packages) and make it visible to hugmesh-remote-fragment. See hugmesh-auth-core/RELEASING.md 6.2." ;;
+              404)
+                echo "::error::NOT READABLE: $2 (HTTP 404). Two causes look identical: (a) it is not published yet, so run the net.hugmesh publish chain first (build-config, parent, commons); (b) it is published but this credential cannot see it, because GitHub masks an unauthorised read of a private package as 404. Check the package page before republishing anything." ;;
+              *)
+                echo "::error::unexpected HTTP $1 reading $2. Not classified; do not assume 'unpublished'." ;;
+            esac
+          }
+          rc=0
+          code=$(probe hugmesh-commons hugmesh-commons "${commons_version}" commons.pom)
+          if [ "${code}" = "200" ]; then
+            echo "  readable    hugmesh-commons ${commons_version}"
+            parent_version=$(tr -d '\n' < commons.pom | grep -o '<parent>.*</parent>' | grep -o '<version>[^<]*' | head -n1 | cut -d'>' -f2)
+            if [ -z "${parent_version}" ]; then
+              echo "::error::could not read the parent version from the hugmesh-commons ${commons_version} POM"
+              rc=1
+            else
+              code=$(probe hugmesh-parent hugmesh-parent "${parent_version}" parent.pom)
+              if [ "${code}" = "200" ]; then
+                echo "  readable    hugmesh-parent ${parent_version}"
+              else
+                explain "${code}" "hugmesh-parent ${parent_version}"
+                rc=1
+              fi
+            fi
+          else
+            explain "${code}" "hugmesh-commons ${commons_version}"
+            rc=1
+          fi
+          rm -f commons.pom parent.pom
+          exit ${rc}
+
       - name: Build and push sync sidecar image
         uses: docker/build-push-action@v6
         with:
           context: .
           file: Dockerfile
           push: true
+          # settings-github.xml resolves hugmesh-commons from GitHub Packages. The token and
+          # user name travel as BuildKit secret files (the Dockerfile mounts packages_token and
+          # packages_actor), never as build args or image layers.
+          build-args: |
+            MAVEN_SETTINGS=settings-github.xml
+          secrets: |
+            packages_token=${{ secrets.PACKAGES_READ_TOKEN || secrets.GITHUB_TOKEN }}
+            packages_actor=${{ secrets.PACKAGES_READ_ACTOR || github.actor }}
           tags: |
             ${{ env.SYNC_IMAGE }}:${{ steps.vars.outputs.tag }}
-            ${{ env.SYNC_IMAGE }}:latest
+            ${{ github.ref == format('refs/heads/{0}', github.event.repository.default_branch) && format('{0}:latest', env.SYNC_IMAGE) || '' }}
 
   build-nginx:
     runs-on: ubuntu-latest
@@ -86,4 +172,4 @@ jobs:
           push: true
           tags: |
             ${{ env.NGINX_IMAGE }}:${{ steps.vars.outputs.tag }}
-            ${{ env.NGINX_IMAGE }}:latest
+            ${{ github.ref == format('refs/heads/{0}', github.event.repository.default_branch) && format('{0}:latest', env.NGINX_IMAGE) || '' }}

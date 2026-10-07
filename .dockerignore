@@ -12,8 +12,11 @@
 # GIT_STRATEGY nor GIT_CLEAN_FLAGS, so relying on that is an unstated dependency
 # on a GitLab default. Excluding it here does not depend on runner config.
 #
-# Keep .mvn/, mvnw, pom.xml, settings.xml and src/ -- the build stage runs
-# `./mvnw -B -s settings.xml package` and needs all five.
+# Keep .mvn/, mvnw, pom.xml, settings.xml, settings-github.xml and src/ -- the build
+# stage runs `./mvnw -B -s "$MAVEN_SETTINGS" package` (settings.xml by default,
+# settings-github.xml from the GitHub release workflow) and needs all of them.
+# settings-github.xml sits at the root, not under .github/, because .github/ is
+# excluded below.
 
 # Maven output, including the native binary build:native leaves behind.
 target/

@@ -1,0 +1,73 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<!--
+  GITHUB ACTIONS Maven settings for resolving net.hugmesh:hugmesh-commons (and its parent
+  POM, net.hugmesh:hugmesh-parent) from GitHub Packages. Selected by the Dockerfile build
+  arg MAVEN_SETTINGS=settings-github.xml, which .github/workflows/release.yml passes. The
+  default (settings.xml) is the GitLab group registry and is what the GitLab pipeline uses;
+  this file does not replace it.
+
+  WHY A SEPARATE FILE AND NOT A <repositories> BLOCK IN pom.xml
+  maven.pkg.github.com answers 401 to an unauthenticated GET, even for a public package. A
+  repository declared in pom.xml would break every developer build and the GitLab build,
+  which resolve from ~/.m2 or the GitLab registry. A settings file passed with -s adds the
+  repository only for the build that asks for it. Same reasoning as hugmesh-commons'
+  .github/maven-ci-settings.xml. (This file sits at the repository root rather than under
+  .github/ because .dockerignore excludes .github/ from the build context.)
+
+  WHY TWO REPOSITORIES
+  GitHub Packages is per repository: https://maven.pkg.github.com/<owner>/<repo> serves only
+  the packages published from that repository. hugmesh-commons 2.1.0 is in the first;
+  its parent POM (hugmesh-parent 2.8.0) must also resolve, and lives in the second.
+  hugmesh-build-config is not needed: it is only a plugin dependency of hugmesh-parent's
+  own builds, and this project depends on commons as a library and never runs those plugins.
+
+  THE CREDENTIAL
+  Read access to another repository's package is NOT given to the workflow's automatic
+  GITHUB_TOKEN by default. The workflow passes secrets.PACKAGES_READ_TOKEN (a classic PAT with
+  read:packages, operator decision 90a = B; see hugmesh-auth-core/RELEASING.md section 6.2)
+  and falls back to the automatic token. The Dockerfile reads the token and user name from
+  BuildKit secret files and exports them as UPSTREAM_PACKAGES_TOKEN / UPSTREAM_PACKAGES_ACTOR
+  for the single mvnw call. Nothing is committed here and neither value is a build arg.
+-->
+<settings xmlns="http://maven.apache.org/SETTINGS/1.0.0"
+          xmlns:xsi="http://www.w3.org/2001/XMLSchema-instance"
+          xsi:schemaLocation="http://maven.apache.org/SETTINGS/1.0.0
+                              https://maven.apache.org/xsd/settings-1.0.0.xsd">
+
+  <servers>
+    <server>
+      <id>github-hugmesh-commons</id>
+      <username>${env.UPSTREAM_PACKAGES_ACTOR}</username>
+      <password>${env.UPSTREAM_PACKAGES_TOKEN}</password>
+    </server>
+    <server>
+      <id>github-hugmesh-parent</id>
+      <username>${env.UPSTREAM_PACKAGES_ACTOR}</username>
+      <password>${env.UPSTREAM_PACKAGES_TOKEN}</password>
+    </server>
+  </servers>
+
+  <profiles>
+    <profile>
+      <id>github-hugmesh-packages</id>
+      <repositories>
+        <repository>
+          <id>github-hugmesh-commons</id>
+          <url>https://maven.pkg.github.com/hugmesh/hugmesh-commons</url>
+          <releases><enabled>true</enabled></releases>
+          <snapshots><enabled>false</enabled></snapshots>
+        </repository>
+        <repository>
+          <id>github-hugmesh-parent</id>
+          <url>https://maven.pkg.github.com/hugmesh/hugmesh-parent</url>
+          <releases><enabled>true</enabled></releases>
+          <snapshots><enabled>false</enabled></snapshots>
+        </repository>
+      </repositories>
+    </profile>
+  </profiles>
+
+  <activeProfiles>
+    <activeProfile>github-hugmesh-packages</activeProfile>
+  </activeProfiles>
+</settings>
