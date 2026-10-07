@@ -1,0 +1,100 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<!--
+  CI-ONLY Maven settings for the release-image build. Used by the Dockerfile ONLY when the
+  BuildKit secret `packages_read_token` is mounted (the .github/workflows/release.yml path);
+  every other build (GitLab CI, the local compose lane via m2-bootstrap.sh, a developer's
+  ./mvnw) keeps using the repo-root settings.xml and never reads this file.
+
+  WHY A SECOND SETTINGS FILE: the root settings.xml points at the retired GitLab group
+  registry (${env.CI_API_V4_URL}/groups/${env.GITLAB_GROUP_ID}/-/packages/maven). On a GitHub
+  runner both variables are empty, so the parent POM resolves from "/groups//-/packages/maven"
+  and the build dies with "Non-resolvable parent POM" (run 37682448800). The net.hugmesh
+  libraries are published to GitHub Packages by the release chain (hugmesh-build-config ->
+  hugmesh-parent -> hugmesh-commons -> hugmesh-auth-core), one registry URL PER REPOSITORY:
+  there is no org-wide Maven endpoint on maven.pkg.github.com.
+
+  Same shape as hugmesh-commons/.github/maven-ci-settings.xml (the chain's own copy), minus
+  the `github` deploy server, because this build only reads.
+
+  BOTH <repositories> AND <pluginRepositories>: hugmesh-parent lists hugmesh-build-config on
+  the PMD / Checkstyle / SpotBugs plugin classpaths, and Maven resolves a plugin's
+  dependencies from the plugin repositories only.
+
+  CREDENTIAL: maven.pkg.github.com requires authentication even to read, and the automatic
+  GITHUB_TOKEN cannot read another repository's package. The credential is the operator's
+  classic read:packages PAT, org secret PACKAGES_READ_TOKEN (decision 90a = B; see
+  hugmesh-commons/RELEASING.md section 6). release.yml hands it to the build as a BuildKit
+  secret, never an ARG or ENV. NO SECRET IS COMMITTED HERE.
+-->
+<settings xmlns="http://maven.apache.org/SETTINGS/1.0.0"
+          xmlns:xsi="http://www.w3.org/2001/XMLSchema-instance"
+          xsi:schemaLocation="http://maven.apache.org/SETTINGS/1.0.0 http://maven.apache.org/xsd/settings-1.0.0.xsd">
+
+  <servers>
+    <server>
+      <id>github-hugmesh-build-config</id>
+      <username>${env.UPSTREAM_PACKAGES_ACTOR}</username>
+      <password>${env.UPSTREAM_PACKAGES_TOKEN}</password>
+    </server>
+    <server>
+      <id>github-hugmesh-parent</id>
+      <username>${env.UPSTREAM_PACKAGES_ACTOR}</username>
+      <password>${env.UPSTREAM_PACKAGES_TOKEN}</password>
+    </server>
+    <server>
+      <id>github-hugmesh-commons</id>
+      <username>${env.UPSTREAM_PACKAGES_ACTOR}</username>
+      <password>${env.UPSTREAM_PACKAGES_TOKEN}</password>
+    </server>
+  </servers>
+
+  <profiles>
+    <profile>
+      <id>github-hugmesh-packages</id>
+      <repositories>
+        <repository>
+          <id>github-hugmesh-build-config</id>
+          <url>https://maven.pkg.github.com/hugmesh/hugmesh-build-config</url>
+          <releases><enabled>true</enabled></releases>
+          <snapshots><enabled>false</enabled></snapshots>
+        </repository>
+        <repository>
+          <id>github-hugmesh-parent</id>
+          <url>https://maven.pkg.github.com/hugmesh/hugmesh-parent</url>
+          <releases><enabled>true</enabled></releases>
+          <snapshots><enabled>false</enabled></snapshots>
+        </repository>
+        <repository>
+          <id>github-hugmesh-commons</id>
+          <url>https://maven.pkg.github.com/hugmesh/hugmesh-commons</url>
+          <releases><enabled>true</enabled></releases>
+          <snapshots><enabled>false</enabled></snapshots>
+        </repository>
+      </repositories>
+      <pluginRepositories>
+        <pluginRepository>
+          <id>github-hugmesh-build-config</id>
+          <url>https://maven.pkg.github.com/hugmesh/hugmesh-build-config</url>
+          <releases><enabled>true</enabled></releases>
+          <snapshots><enabled>false</enabled></snapshots>
+        </pluginRepository>
+        <pluginRepository>
+          <id>github-hugmesh-parent</id>
+          <url>https://maven.pkg.github.com/hugmesh/hugmesh-parent</url>
+          <releases><enabled>true</enabled></releases>
+          <snapshots><enabled>false</enabled></snapshots>
+        </pluginRepository>
+        <pluginRepository>
+          <id>github-hugmesh-commons</id>
+          <url>https://maven.pkg.github.com/hugmesh/hugmesh-commons</url>
+          <releases><enabled>true</enabled></releases>
+          <snapshots><enabled>false</enabled></snapshots>
+        </pluginRepository>
+      </pluginRepositories>
+    </profile>
+  </profiles>
+
+  <activeProfiles>
+    <activeProfile>github-hugmesh-packages</activeProfile>
+  </activeProfiles>
+</settings>
