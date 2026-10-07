@@ -35,7 +35,7 @@ jobs:
         run: |
           set -uo pipefail
           if [ -z "${UPSTREAM_PACKAGES_TOKEN}" ]; then
-            echo "::error::secret PACKAGES_READ_TOKEN is not set for this repository. Set it under Settings -> Secrets and variables -> Actions (or share the org secret with this repository): a classic personal access token with the read:packages scope. The automatic GITHUB_TOKEN cannot read another repository's packages, so there is no fall-back."
+            echo "::error::secret PACKAGES_READ_TOKEN is not set for this repository. Set it as a REPOSITORY secret under Settings -> Secrets and variables -> Actions (the org is on the Free plan, where an org secret does not reach private repositories): a classic personal access token with the read:packages scope. The automatic GITHUB_TOKEN cannot read another repository's packages, so there is no fall-back."
             exit 1
           fi
           rc=0
