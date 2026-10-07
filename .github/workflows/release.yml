@@ -75,7 +75,7 @@ jobs:
           else
             echo "read credential: the automatic secrets.GITHUB_TOKEN. It can read another"
             echo "repository's package only if that package grants this repository access."
-            echo "The durable fix is the PACKAGES_READ_TOKEN org secret (hugmesh-auth-core/RELEASING.md 6.2)."
+            echo "The durable fix is a PACKAGES_READ_TOKEN repository secret on this repo (hugmesh-auth-core/RELEASING.md 6.2)."
           fi
           commons_version=$(grep -A1 '<artifactId>hugmesh-commons</artifactId>' pom.xml | sed -n 's|.*<version>\(.*\)</version>.*|\1|p' | head -n1)
           if [ -z "${commons_version}" ]; then
@@ -90,7 +90,7 @@ jobs:
           explain() { # $1 http code, $2 what
             case "$1" in
               401|403)
-                echo "::error::CANNOT AUTHENTICATE to read $2 (HTTP $1). This is NOT 'unpublished'. The credential cannot read that repository's Maven registry. Fix: create the PACKAGES_READ_TOKEN org secret (classic PAT, read:packages) and make it visible to hugmesh-remote-fragment. See hugmesh-auth-core/RELEASING.md 6.2." ;;
+                echo "::error::CANNOT AUTHENTICATE to read $2 (HTTP $1). This is NOT 'unpublished'. The credential cannot read that repository's Maven registry. Fix: create the PACKAGES_READ_TOKEN secret (classic PAT, read:packages) as a repository secret on hugmesh-remote-fragment (an org secret only reaches private repos on a paid plan). See hugmesh-auth-core/RELEASING.md 6.2." ;;
               404)
                 echo "::error::NOT READABLE: $2 (HTTP 404). Two causes look identical: (a) it is not published yet, so run the net.hugmesh publish chain first (build-config, parent, commons); (b) it is published but this credential cannot see it, because GitHub masks an unauthorised read of a private package as 404. Check the package page before republishing anything." ;;
               *)
