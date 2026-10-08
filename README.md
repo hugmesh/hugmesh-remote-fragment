@@ -83,13 +83,13 @@ sequenceDiagram
 
 ## The federation API contract
 
-All three calls require a valid Casdoor JWT. The federation fetch path is gated `authenticated()`, and the pods present a service token to satisfy that gate.
+All three calls require a valid Casdoor JWT. The federation security config gates the manifest and `/api/federation/bundles/**` with `authenticated()`, and the pods present a service token to satisfy that gate. The metadata call adds the scoping shown in the table.
 
 | Call | Returns | Used for |
 |------|---------|----------|
 | `GET /api/federation/manifest` | `{ generatedAt, remotes:[ { slug, displayName, kind, remoteEntryUrl, exposedModule, version, contentHash, visibility, metadata } ] }` | The source set. Only **enabled + circuit_state='closed' + visibility-permitted + in-domain** modules appear, so the admin/mod **kill-switch and per-brand cut are honored automatically**. This fleet filters `remotes` to `kind == "fragment"`. |
-| `GET /api/federation/bundles/{contentHash}` | `BundleMetadata` (`slug`, `contentHash`, `manifestJson`, `versionDir`, `visibility`, ...) | `manifestJson` is the per-bundle file list (multi-file). |
-| `GET /api/federation/bundles/{contentHash}/files/{*path}` | the file bytes (content-type by extension) | The actual sync read; streamed to disk. |
+| `GET /api/federation/bundles/{contentHash}` | `BundleMetadata` (`slug`, `contentHash`, `manifestJson`, `versionDir`, `visibility`, ...) | `manifestJson` is the per-bundle file list (multi-file). **Owner- and brand-scoped** (see [Authorization model](#authorization-model-service-token-only)): a hash outside the caller's scope returns 404. |
+| `GET /api/federation/bundles/{contentHash}/files/{*path}` | the file bytes (content-type by extension) | The actual sync read; streamed to disk. Any authenticated caller: no owner or brand scoping, the 256-bit hash is the capability. |
 
 `contentHash` (SHA-256 hex of the bundle tree) serves three roles at once: it is the **sync key** that identifies whether a bundle is already on disk, the **version discriminator** that makes old and new bundles coexist without conflict, and the **immutable path segment** that enables long-lived HTTP caching.
 
@@ -139,8 +139,9 @@ Nested paths such as `chunks/main.js` are preserved on the wire because federati
 
 This fleet **enforces no role-gates of its own** — it is a static byte mirror. The only authorization that matters is what its service token is permitted to read from federation, which in turn bounds what it can possibly serve:
 
-* The federation manifest and bundle reads require only `authenticated()`. The `ROLE_USER` floor of the platform's role cascade (`SUPERADMIN → ADMIN → MOD → USER`) is therefore sufficient to fetch the manifest.
-* At the `ROLE_USER` floor, federation returns **only `public` fragments**. To serve `internal` fragments, bind `app-fragment-sync` to a Casdoor role that maps to `ROLE_ADMIN` or `ROLE_INTERNAL`. This is not done by default (see [Known limitations](#known-limitations-and-design-notes)).
+* The federation manifest and bundle reads require only `authenticated()`, so the `ROLE_USER` floor of the platform's role cascade (`SUPERADMIN → ADMIN → MOD → USER`) is enough to fetch the manifest and the file bytes.
+* The bundle **metadata** call is scoped further (`BundleService.byContentHash`). A caller without `ROLE_ADMIN` reads only its own bundles, within its brand. `ROLE_ADMIN` reads any owner's bundle within its brand. A `SUPERADMIN` principal reads any bundle in any brand. `ROLE_INTERNAL` does not widen this tier. The sync reads the metadata before it fetches any file, so for a bundle its token cannot read, the call returns 404 and the sync logs the bundle as failed. A machine account is not the owner of the platform's user and admin bundles, so by federation's code `ROLE_USER` is not enough to sync them. The reference Deployment's comments say it is; they predate the owner scoping.
+* At the `ROLE_USER` floor, federation returns **only `public` fragments**. To see `internal` fragments in the manifest, bind `app-fragment-sync` to a Casdoor role that maps to `ROLE_ADMIN` or `ROLE_INTERNAL`. This is not done by default (see [Known limitations](#known-limitations-and-design-notes)).
 * The token's `DOMAIN_<x>` authority (derived from the validated issuer) restricts the manifest to a single brand, unless the token carries `SUPERADMIN` (which gets the cross-brand control-plane view). For the per-brand fleet topology, bind each fleet's machine account to its own brand's Casdoor issuer.
 
 ## Content-addressed path scheme and caching
@@ -207,7 +208,7 @@ grant_type=client_credentials&client_id=app-fragment-sync&client_secret=<secret>
 -> 200 { "access_token": "<RS256 JWT>", "token_type":"Bearer", "expires_in":... }
 ```
 
-The token is cached and re-minted shortly before `expires_in` (and on demand via `invalidate()`, which `FederationSyncClient` triggers automatically on a federation 401/403). A service JWT with the `ROLE_USER` floor is enough for the manifest read + bundle fetch (both only require `authenticated()`). It will see **only `public` fragments** unless its Casdoor app/user carries `ROLE_ADMIN` / `ROLE_INTERNAL` — bind the machine account to a role mapping to `ROLE_INTERNAL` only if `internal` fragments must be served by this fleet.
+The token is cached and re-minted 60 seconds before `expires_in` (30 minutes is assumed when Casdoor sends none), and on demand via `invalidate()`, which `FederationSyncClient` triggers automatically on a federation 401/403. A service JWT with the `ROLE_USER` floor passes the `authenticated()` gate on the manifest and the file bytes, and sees **only `public` fragments** in the manifest. Its Casdoor app or user needs `ROLE_ADMIN` or `ROLE_INTERNAL` to see `internal` ones. For the bundle metadata call, see the scoping under [Authorization model](#authorization-model-service-token-only). The Casdoor init job maps `fragment-sync` to `ROLE_USER` (`init-job.yaml`, `APPS`).
 
 ### Secrets and configuration keys
 
@@ -215,9 +216,9 @@ If you are running this against the reference HugMesh cluster deployment, the re
 
 | What | Where |
 |------|-------|
-| Casdoor `client_secret` for `app-fragment-sync` | A secrets manager entry at `secret/hugmesh/fragment-sync`, property `client_secret` (KV-v2 style) |
-| Materialized into the pod | Kubernetes Secret `fragment-sync-casdoor` (via an ExternalSecret in `hugmesh-frontend`), keys `clientId` (literal `app-fragment-sync`) + `clientSecret` |
-| Casdoor OAuth app | `app-fragment-sync`, `grantTypes: [authorization_code, client_credentials]`. Per-brand fleets bind a per-brand machine account/issuer. |
+| Casdoor `client_secret` for `app-fragment-sync` | The Vault path `secret/<brand>/casdoor-apps`, property `fragment-sync`. The ExternalSecret reads key `hugmesh/casdoor-apps` from the `hugmesh-vault` store. |
+| Materialized into the pod | Kubernetes Secret `fragment-sync-casdoor` (via an ExternalSecret in `hugmesh-frontend`, refreshed hourly), keys `clientId` (literal `app-fragment-sync`) + `clientSecret` |
+| Casdoor OAuth app | `app-fragment-sync`, `grantTypes: ["authorization_code", "client_credentials", "password"]` (the init job sets the same list for every app it reconciles). A per-brand fleet would need a per-brand machine account and issuer; none exists yet. |
 
 The image carries **no keys**; the client secret is injected at runtime via `secretKeyRef` (or your platform's equivalent).
 
@@ -344,14 +345,14 @@ The sync container runs as uid 1000 and nginx runs as uid 101 (the `nginx-unpriv
 ## Roadmap
 
 * **Multi-file bundle support.** The sync already understands the multi-file `manifestJson` shapes described above. It will start exercising that path automatically as soon as federation publishes bundles with more than one file — no changes needed in this repository.
-* **`ROLE_INTERNAL` fragment serving.** Serving `internal` (not just `public`) fragments only requires binding the `app-fragment-sync` machine account to a Casdoor role that maps to `ROLE_INTERNAL` / `ROLE_ADMIN` (see [Authorization model](#authorization-model-service-token-only)). This is a configuration/binding change, not a code change.
+* **`ROLE_INTERNAL` fragment serving.** Serving `internal` (not just `public`) fragments only requires binding the `app-fragment-sync` machine account to a Casdoor role that maps to `ROLE_INTERNAL` / `ROLE_ADMIN` (see [Authorization model](#authorization-model-service-token-only)). This is a configuration/binding change, not a code change in this repo. The metadata scoping above still applies.
 * **Per-brand fleet topology.** The intended multi-tenant deployment shape is one fragment fleet, plus one issuer-bound `app-fragment-sync` machine account, per brand/domain — so each fleet's token carries that brand's `DOMAIN_<x>` and it syncs only its own brand's fragments. Federation's per-domain filtering is already in place on its side; realizing the per-brand fleets is purely a machine-account/issuer provisioning step.
 
 ## Known limitations and design notes
 
 * **Multi-file bundle pipeline is implemented but not yet exercised end-to-end**, because federation doesn't currently produce multi-file bundles (see above). It's covered by unit tests against a synthetic multi-file `manifestJson`, plus real end-to-end coverage of the single-file fallback.
 * **Domain scoping is inherited, not implemented locally.** This service holds no domain/tenant/issuer logic of its own; it presents its configured service token and serves whatever per-domain manifest subset federation returns for that token. See [multi-tenancy](#the-gateway-casdoor-federation-and-multi-tenancy) above.
-* **`ROLE_INTERNAL` fragments require an explicit role binding** in Casdoor for the `app-fragment-sync` account; the default service account only ever sees `public` fragments.
+* **`ROLE_INTERNAL` fragments require an explicit role binding** in Casdoor for the `app-fragment-sync` account; the default service account only ever sees `public` fragments in the manifest.
 * **Parent POM choice.** This project parents directly on `spring-boot-starter-parent` rather than the platform's shared `hugmesh-parent` metapom. `hugmesh-parent` carries a shared `<dependencies>` block written for the platform's reactive BFF services (Spring Security, an OAuth2 resource server, R2DBC, PostgreSQL, Liquibase); inheriting it onto this database-less, filter-less machine client auto-locks every non-`actuator/health`/`info` path behind a randomly generated HTTP Basic password and adds an unused SpringDoc/Swagger surface. Instead, this project depends directly on `hugmesh-commons` (pinned version, with `<exclusions>` stripping those same transitive artifacts) to stay aligned with the rest of the fleet without that side effect. `hugmesh-commons` is not currently used by any class in this repo — there's no security/tenancy surface here to migrate onto it.
 * **No cross-restart pruning is needed.** The nginx root lives in an `emptyDir` that's re-derived from the manifest on every pod start, so a removed fragment is simply absent after a restart regardless of pruning; the sync's own prune step exists for the *live*, long-running loop case.
 * **Horizontal autoscaling requires a metrics-server** in the cluster. The reference Deployment ships a static replica floor that works without one; the HPA takes over scaling above that floor once metrics-server is installed.
