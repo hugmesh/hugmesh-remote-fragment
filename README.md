@@ -88,7 +88,7 @@ All three calls require a valid Casdoor JWT. The federation security config gate
 | Call | Returns | Used for |
 |------|---------|----------|
 | `GET /api/federation/manifest` | `{ generatedAt, remotes:[ { slug, displayName, kind, remoteEntryUrl, exposedModule, version, contentHash, visibility, metadata } ] }` | The source set. Only **enabled + circuit_state='closed' + visibility-permitted + in-domain** modules appear, so the admin/mod **kill-switch and per-brand cut are honored automatically**. This fleet filters `remotes` to `kind == "fragment"`. |
-| `GET /api/federation/bundles/{contentHash}` | `BundleMetadata` (`slug`, `contentHash`, `manifestJson`, `versionDir`, `visibility`, ...) | `manifestJson` is the per-bundle file list (multi-file). **Owner- and brand-scoped** (see [Authorization model](#authorization-model-service-token-only)): a hash outside the caller's scope returns 404. |
+| `GET /api/federation/bundles/{contentHash}` | `BundleMetadata` (`slug`, `contentHash`, `manifestJson`, `visibility`, ...). Federation returns a public-safe view without `versionDir` or `ownerUserId`; the client record has those fields, and they arrive null. | `manifestJson` is the per-bundle file list (multi-file). **Owner- and brand-scoped** (see [Authorization model](#authorization-model-service-token-only)): a hash outside the caller's scope returns 404. |
 | `GET /api/federation/bundles/{contentHash}/files/{*path}` | the file bytes (content-type by extension) | The actual sync read; streamed to disk. Any authenticated caller: no owner or brand scoping, the 256-bit hash is the capability. |
 
 `contentHash` (SHA-256 hex of the bundle tree) does three jobs. It is the **sync key** that says whether a bundle is already on disk. It is the **version discriminator**, so old and new bundles sit side by side. And it is the **immutable path segment** that allows long-lived HTTP caching.
@@ -218,7 +218,7 @@ On the reference HugMesh cluster, the secret material lives here:
 |------|-------|
 | Casdoor `client_secret` for `app-fragment-sync` | The Vault path `secret/<brand>/casdoor-apps`, property `fragment-sync`. The ExternalSecret reads key `hugmesh/casdoor-apps` from the `hugmesh-vault` store. |
 | Materialized into the pod | Kubernetes Secret `fragment-sync-casdoor` (via an ExternalSecret in `hugmesh-frontend`, refreshed hourly), keys `clientId` (literal `app-fragment-sync`) + `clientSecret` |
-| Casdoor OAuth app | `app-fragment-sync`, `grantTypes: ["authorization_code", "client_credentials", "password"]` (the init job sets the same list for every app it reconciles). A per-brand fleet would need a per-brand machine account and issuer; the reference cluster defines one fleet and one machine account. |
+| Casdoor OAuth app | `app-fragment-sync`, `grantTypes: ["authorization_code", "client_credentials", "password"]` (the init job's default list for each app; it adds `refresh_token` for `user-bff`). A per-brand fleet would need a per-brand machine account and issuer; the reference cluster defines one fleet and one machine account. |
 
 The image carries **no keys**. The client secret is injected at runtime via `secretKeyRef` (or your platform's equivalent).
 
@@ -348,7 +348,7 @@ The `nginx-unprivileged` image defaults to uid 101, and the sync `Dockerfile` se
 
 * **Multi-file bundle support.** Built (see [Multi-file vs. single-file bundles](#multi-file-vs-single-file-bundles)); it starts working when federation publishes bundles with more than one file.
 * **`ROLE_INTERNAL` fragment serving.** To see `internal` fragments in the manifest, bind `app-fragment-sync` to a Casdoor role that maps to `ROLE_INTERNAL` / `ROLE_ADMIN` (see [Authorization model](#authorization-model-service-token-only)). That is configuration, not code in this repo. The metadata scoping there still applies.
-* **Per-brand fleet topology.** One fleet and one issuer-bound `app-fragment-sync` machine account per brand/domain (see [multi-tenancy](#the-gateway-casdoor-federation-and-multi-tenancy)). Federation's per-domain filtering is in place. The provisioning has not been done.
+* **Per-brand fleet topology.** One fleet and one issuer-bound `app-fragment-sync` machine account per brand/domain (see [multi-tenancy](#the-gateway-casdoor-federation-and-multi-tenancy)). Federation's per-domain filtering is in place. The reference cluster has not been provisioned that way.
 
 ## Known limitations and design notes
 
