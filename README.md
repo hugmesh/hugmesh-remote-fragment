@@ -42,7 +42,7 @@ There is **no per-request proxy** to the federation API. The sidecar syncs bundl
 
 The two containers share a single pod and an `emptyDir` volume mounted at `/usr/share/nginx/html`:
 
-* an **initContainer** runs the sidecar image with `SYNC_MODE=once` — it performs a full sync and exits 0, ensuring nginx starts with content already on disk;
+* an **initContainer** runs the sidecar image with `SYNC_MODE=once` — it performs a full sync, then exits 0 if the manifest sync completed and 1 if it failed (`FragmentSyncRunner.runOnceBlocking`). A bundle that fails on its own is logged and counted, and does not change the exit code, so exit 0 means the manifest sync finished, not that every bundle landed;
 * the **sidecar** runs the same image with `SYNC_MODE=loop` — it periodically re-syncs so the fleet tracks federation's kill-switch in near-real time;
 * the **nginx** container serves the shared volume as static files.
 
@@ -69,12 +69,12 @@ sequenceDiagram
     K8s->>Sidecar: start (same emptyDir mounted)
     K8s->>Nginx: start (same emptyDir mounted)
     Sidecar->>Fed: periodic re-sync (every SYNC_INTERVAL)
-    Note over Nginx: readiness probe passes only<br/>after firstSync indicator is set
+    Note over Sidecar: readiness probe passes only<br/>after the firstSync indicator is set
 ```
 
 ## The gateway, Casdoor, federation, and multi-tenancy
 
-* **The platform gateway** — the only public ingress to the served bytes. The host app's `loadRemoteModule` requests resolve `/_fragments/...` URLs through the gateway; the gateway owns the public-facing access rules (data-driven, keyed on route). This fleet exposes no other route (`location / { return 404; }`).
+* **The platform gateway** — the only public ingress to the served bytes. The host app's `loadRemoteModule` requests resolve `/_fragments/...` URLs through the gateway; the gateway owns the public-facing access rules (data-driven, keyed on route). Besides `/_fragments/` and `/healthz`, the image's conf (`nginx/nginx.conf`) answers 404 (`location / { return 404; }`). The conf the reference Deployment mounts (`deploy/nginx.conf`) ends in `location / { try_files $uri =404; }` instead, so it would serve any other file that exists under the nginx root.
 * **Casdoor (`hugmesh-pki`)** — the sidecar mints a **service JWT** via the OAuth2 **client-credentials** grant against the in-cluster Casdoor token endpoint. Federation is an OAuth2 resource server, so every manifest/bundle read carries `Authorization: Bearer <casdoor-jwt>`. The token's **authorities** decide what the manifest returns.
 * **federation API (`hugmesh-federation-api`)** — the authoritative catalog. Its `ManifestService` does the visibility cut (`public` vs `internal`), applies the scope-override kill-switch, drops circuit-open remotes, and performs the **per-domain cut** in the query itself.
 * **Multi-tenancy / multi-brand (the domain-scoping intent).** The platform is multi-brand, multi-tenant. In federation, a caller's brand is derived from a validated Casdoor **issuer** and surfaced as a `DOMAIN_<x>` authority; `ManifestService.render(authorities, scope)` then pins the module + active-scope-override finders to that domain, so a brand-X principal's manifest lists only brand-X remotes, and a brand-X `scope=all` kill never blanks brand-Y. A `SUPERADMIN` authority instead gets the un-pinned, cross-brand control-plane tier.
@@ -99,9 +99,9 @@ Each sync run executes in this order:
 
 1. **Filter** — fetch the manifest and keep only `kind == "fragment"` remotes. The federation API has already dropped disabled, circuit-open, invisible, and out-of-domain rows server-side, so this client-side filter is a final narrow.
 2. **Dedupe** — skip any `<slug>/<contentHash>` directory that already exists on disk. Because `contentHash` is content-addressed, an existing directory is guaranteed to be complete and correct; no re-fetch is needed.
-3. **Atomic write** — for each new bundle, stream every file into a `.part` temporary inside a per-bundle staging directory, then promote the whole staging directory atomically. The bundle directory appears on disk only once every file has landed; a partially-written staging directory is cleaned up on the next run so retries are safe.
-4. **Prune** — delete any `<slug>/<contentHash>` directory that is no longer in the manifest (the fragment was disabled, removed, kill-switched, or is out of domain). Empty slug directories and leftover `.stage-` directories are swept at the same time.
-5. **Index** — write `/_fragments/index.json` mapping each slug to its current `{ contentHash, version, remoteEntryUrl, exposedModule, displayName, visibility, servePath }` for the host's `loadRemoteModule`.
+3. **Atomic write** — for each new bundle, stream every file into a `.part` temporary inside a per-bundle staging directory, then promote the whole staging directory atomically. The bundle directory appears on disk only once every file has landed. A staging directory (`.<contentHash>-stage-<random>`, inside the slug directory) is removed when its bundle fails; any dot-prefixed leftover is deleted by the prune step on the next run, so retries are safe.
+4. **Prune** — delete any `<slug>/<contentHash>` directory that is no longer in the manifest (the fragment was disabled, removed, kill-switched, or is out of domain). Empty slug directories and leftover dot-prefixed staging directories are swept at the same time. A manifest entry with no `contentHash` is counted as skipped, and nothing is fetched for it.
+5. **Index** — write `/_fragments/index.json`: `{ generatedAt, fragments: { <slug>: { contentHash, version, remoteEntryUrl, exposedModule, displayName, visibility, servePath } } }`. `servePath` is `/_fragments/<slug>/<contentHash>/`.
 
 **Resilience:** a single bad bundle is logged and skipped (`onErrorResume`); it never aborts the run or the periodic loop. A manifest-level failure leaves the previous on-disk state intact — a transient federation outage never empties the fleet.
 
@@ -109,14 +109,14 @@ All blocking filesystem I/O is dispatched to `Schedulers.boundedElastic()`; the 
 
 ### Multi-file vs. single-file bundles
 
-The sync reads the file list from the bundle's `manifestJson` field. As of this writing, federation stores a single staged entry file and defaults `manifestJson` to `"{}"`, so in practice the sync always takes the fallback path and fetches the single entry file `remoteEntry.json`. The multi-file path is already implemented and activates automatically once federation ships real multi-file bundles — no code change is needed here.
+The sync reads the file list from the bundle's `manifestJson` field. As of this writing, federation takes a single file per bundle upload and stores `manifestJson` as `"{}"` unless the uploader passes the optional `manifest` parameter (`BundleService` sets `"{}"` when it is null), so in practice the sync takes the fallback path and fetches the single entry file `remoteEntry.json`. The fallback name is fixed in the sync (`DEFAULT_ENTRY_FILE`); the sync does not read the bundle's own entry-file name. The multi-file path is already implemented and activates automatically once federation ships real multi-file bundles — no code change is needed here.
 
 When `manifestJson` is non-empty and parseable, it accepts three shapes:
 
 | Shape | Example |
 |-------|---------|
 | JSON array of strings | `["remoteEntry.json", "chunks/main.js"]` |
-| JSON array of objects | `[{"path": "remoteEntry.json"}, {"name": "chunks/main.js"}]` |
+| JSON array of objects (key `path`, `name` or `file`, first one present wins) | `[{"path": "remoteEntry.json"}, {"name": "chunks/main.js"}]` |
 | Object with `files` key | `{"files": ["remoteEntry.json", "chunks/main.js"]}` |
 
 Nested paths such as `chunks/main.js` are preserved on the wire because federation maps the file route as a `{*path}` wildcard; the slash is sent literally rather than percent-encoded.
@@ -150,10 +150,17 @@ Bundles are served at immutable, content-hashed paths:
 ```
 /_fragments/<slug>/<contentHash>/remoteEntry.json
 /_fragments/<slug>/<contentHash>/chunks/main.js
-/_fragments/index.json                              # slug -> current contentHash (no-cache)
+/_fragments/index.json                              # slug -> current contentHash
 ```
 
-The nginx conf applies `Cache-Control: public, max-age=31536000, immutable` to content-hashed paths — because a new bundle always produces a new path, cache-busting is automatic. `index.json` gets `no-cache` so the host always fetches the current slug-to-hash mapping. The conf also re-declares the `.mjs` MIME type as `application/javascript` (stock nginx serves `.mjs` as `application/octet-stream`, which browsers refuse to execute as ES modules) and adds `Access-Control-Allow-Origin: *` so the host can call `loadRemoteModule` across origins. The host resolves each fragment's `remoteEntryUrl` from `index.json` to one of these immutable content-hashed paths.
+There are two nginx confs, and they differ.
+
+* `nginx/nginx.conf` is baked into the `nginx/Dockerfile` image. It sets `Cache-Control: public, max-age=31536000, immutable` and `Access-Control-Allow-Origin: *` on content-hashed paths (`^/_fragments/[^/]+/[0-9a-f]{8,}/`), `Cache-Control: no-cache` on `/_fragments/index.json`, `Cache-Control: public, max-age=60` on any other `/_fragments/` path, and `autoindex off`.
+* `deploy/nginx.conf` is what the reference Deployment mounts from the `remote-fragment-nginx` ConfigMap over the stock image. It sets only `Cache-Control: public, max-age=31536000, immutable` on content-hashed paths (`^/_fragments/[^/]+/[0-9a-f]+/`). It has no `no-cache` rule for `index.json`, no `Access-Control-Allow-Origin` header, no `max-age=60` fallback and no `autoindex` line.
+
+Both confs re-declare the `.mjs` MIME type as `application/javascript` (stock nginx serves `.mjs` as `application/octet-stream`, which browsers refuse to execute as ES modules). A new bundle always produces a new path, so cache-busting is automatic.
+
+`index.json` is the slug-to-hash lookup. As of 2026-10-07 nothing in `hugmesh-host-shell` (`src/`) references `index.json`, `servePath` or `_fragments`, so no consumer of the file is on record. Federation's `remoteEntryUrl` for a vanity profile is `/_fragments/<slug>/<entry>` (`VanityPublishService.applyPublish`), with no hash, and this fleet serves only `/_fragments/<slug>/<contentHash>/...`. The hashed path reaches a client through federation's vanity endpoint (`fragmentPath`) or through `servePath` in `index.json`.
 
 ## Configuration
 
@@ -314,7 +321,7 @@ Maven coordinates: `net.hugmesh:remote-fragment:0.2.0`. Java 25, Spring Boot 4.0
 This repo builds two container images for one pod:
 
 * the root [`Dockerfile`](Dockerfile) — the sync sidecar (JRE jar; the GraalVM native binary is an alternative build via the `native` Maven profile);
-* [`nginx/Dockerfile`](nginx/Dockerfile) — the static server, i.e. the public `nginxinc/nginx-unprivileged` image with this repo's [`nginx.conf`](nginx/nginx.conf) baked in. Deployments can also just mount the conf from a ConfigMap over the stock public image instead of using this image at all.
+* [`nginx/Dockerfile`](nginx/Dockerfile) — the static server, i.e. the public `nginxinc/nginx-unprivileged` image with this repo's [`nginx.conf`](nginx/nginx.conf) baked in. The reference Deployment does not use this image: it runs `nginxinc/nginx-unprivileged:1.27-alpine` with `deploy/nginx.conf` mounted from a ConfigMap.
 
 ### Continuous integration
 
@@ -326,9 +333,9 @@ This repo builds two container images for one pod:
 ## Health checks and probes
 
 * The actuator listens on `:8081`. The `/_fragments` tree is served by nginx on `:8080`.
-* `/actuator/health/readiness` includes a custom `firstSync` indicator: the pod does not become **ready** until at least one manifest sync has succeeded. This prevents traffic from reaching a pod before its nginx root has any content.
+* `/actuator/health/readiness` includes a custom `firstSync` indicator: the sync container, and so the pod, is not **ready** until one manifest sync has completed. The indicator is UP once a sync result exists, even if some bundles failed; it reports `fragments`, `synced`, `deduped`, `failed` and `pruned`. The `web` container's own probes hit `/healthz` on `:8080`; the `firstSync` gate sits on the `sync` container's probe.
 * Liveness is deliberately independent of the sync state. A prolonged federation outage must not restart the pod; the pod should keep serving the last-good on-disk bytes until federation recovers.
-* The nginx container exposes its own `/healthz` endpoint (returns `200 ok`).
+* nginx answers `/healthz` with `200 ok`; the `web` container's readiness and liveness probes use it.
 
 ## Container UID note
 
