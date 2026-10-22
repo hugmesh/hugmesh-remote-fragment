@@ -139,10 +139,15 @@ jobs:
 
   build-sync:
     needs: [version, preflight]
-    runs-on: ${{ fromJSON(github.event_name != 'pull_request' && github.event_name != 'pull_request_target' && (github.ref == 'refs/heads/main' || startsWith(github.ref, 'refs/tags/v') || startsWith(github.ref, 'refs/tags/studio-v')) && vars.RUNS_ON_PUBLISH || '"ubuntu-latest"') }}
+    # Signed publish job: always a GitHub-hosted runner. Nothing built on a
+    # self-hosted runner (the operator's own host) may be published, so this
+    # job deliberately does not use RUNS_ON_PUBLISH.
+    runs-on: ubuntu-latest
     permissions:
       contents: read
       packages: write
+      id-token: write
+      attestations: write
     steps:
       - name: Check out repository
         uses: actions/checkout@v4
@@ -186,6 +191,7 @@ jobs:
           esac
 
       - name: Build and push sync sidecar image
+        id: build
         uses: docker/build-push-action@v6
         with:
           context: .
@@ -204,12 +210,110 @@ jobs:
           secrets: |
             packages_read_token=${{ secrets.PACKAGES_READ_TOKEN }}
 
+      # --- signed-images-20261021 ---
+      # Everything below signs what the step `build` just pushed, by DIGEST, from
+      # this GitHub-hosted job: a cosign keyless signature (Sigstore, GitHub OIDC),
+      # a SLSA build-provenance attestation and an SPDX SBOM attestation, both
+      # pushed next to the image. A run that skipped the build (existing release
+      # tag) skips all of it.
+      - name: Resolve the pushed image name and digest
+        id: signref
+        if: steps.build.outcome == 'success'
+        env:
+          METADATA: ${{ steps.build.outputs.metadata }}
+          DIGEST: ${{ steps.build.outputs.digest }}
+        run: |
+          set -euo pipefail
+          python3 - <<'PY'
+          import json, os, re, sys
+          meta = json.loads(os.environ.get("METADATA") or "{}")
+          digest = os.environ.get("DIGEST", "")
+          if not re.fullmatch(r"sha256:[0-9a-f]{64}", digest):
+              sys.exit(f"::error::build step gave no usable digest: {digest!r}")
+          names = [n.strip() for n in meta.get("image.name", "").split(",") if n.strip()]
+          repos, tags = set(), []
+          for n in names:
+              head, _, last = n.rpartition("/")
+              if ":" in last:
+                  last, tag = last.split(":", 1)
+                  tags.append(tag)
+              repos.add(f"{head}/{last}")
+          if len(repos) != 1:
+              sys.exit(f"::error::expected one pushed repository, got {sorted(repos)}")
+          if "latest" in tags:
+              sys.exit("::error::a :latest tag was pushed; beta images must never be tagged latest")
+          repo = repos.pop()
+          if repo != repo.lower() or not repo.startswith("ghcr.io/hugmesh/"):
+              sys.exit(f"::error::unexpected image repository {repo!r}")
+          with open(os.environ["GITHUB_OUTPUT"], "a") as out:
+              out.write(f"repo={repo}\ndigest={digest}\n")
+          print(f"signing {repo}@{digest} (tags: {', '.join(tags)})")
+          PY
+
+      - name: Install cosign
+        if: steps.signref.outcome == 'success'
+        uses: sigstore/cosign-installer@v3
+
+      - name: Sign the image digest (cosign keyless, GitHub OIDC)
+        if: steps.signref.outcome == 'success'
+        env:
+          REF: ${{ steps.signref.outputs.repo }}@${{ steps.signref.outputs.digest }}
+        run: cosign sign --yes "$REF"
+
+      - name: Attest build provenance (pushed to the registry)
+        if: steps.signref.outcome == 'success'
+        uses: actions/attest-build-provenance@v2
+        with:
+          subject-name: ${{ steps.signref.outputs.repo }}
+          subject-digest: ${{ steps.signref.outputs.digest }}
+          push-to-registry: true
+
+      - name: Generate an SPDX SBOM of the pushed digest
+        if: steps.signref.outcome == 'success'
+        uses: anchore/sbom-action@v0
+        with:
+          image: ${{ steps.signref.outputs.repo }}@${{ steps.signref.outputs.digest }}
+          format: spdx-json
+          output-file: ${{ runner.temp }}/sbom.spdx.json
+          upload-artifact: false
+          upload-release-assets: false
+
+      - name: Attest the SBOM (pushed to the registry)
+        if: steps.signref.outcome == 'success'
+        uses: actions/attest-sbom@v2
+        with:
+          subject-name: ${{ steps.signref.outputs.repo }}
+          subject-digest: ${{ steps.signref.outputs.digest }}
+          sbom-path: ${{ runner.temp }}/sbom.spdx.json
+          push-to-registry: true
+
+      - name: Write the verify commands to the job summary
+        if: steps.signref.outcome == 'success'
+        env:
+          REPO_IMAGE: ${{ steps.signref.outputs.repo }}
+          DIGEST: ${{ steps.signref.outputs.digest }}
+        run: |
+          {
+            echo "### Signed image"
+            echo '```'
+            echo "$REPO_IMAGE@$DIGEST"
+            echo "cosign verify $REPO_IMAGE@$DIGEST --certificate-oidc-issuer https://token.actions.githubusercontent.com --certificate-identity-regexp '^https://github.com/$GITHUB_REPOSITORY/.github/workflows/release.yml@refs/(heads/main|tags/v.*)\$'"
+            echo "gh attestation verify oci://$REPO_IMAGE@$DIGEST --repo $GITHUB_REPOSITORY"
+            echo "gh attestation verify oci://$REPO_IMAGE@$DIGEST --repo $GITHUB_REPOSITORY --predicate-type https://spdx.dev/Document/v2.3"
+            echo '```'
+          } >> "$GITHUB_STEP_SUMMARY"
+
   build-nginx:
     needs: [version, build-sync]
-    runs-on: ${{ fromJSON(github.event_name != 'pull_request' && github.event_name != 'pull_request_target' && (github.ref == 'refs/heads/main' || startsWith(github.ref, 'refs/tags/v') || startsWith(github.ref, 'refs/tags/studio-v')) && vars.RUNS_ON_PUBLISH || '"ubuntu-latest"') }}
+    # Signed publish job: always a GitHub-hosted runner. Nothing built on a
+    # self-hosted runner (the operator's own host) may be published, so this
+    # job deliberately does not use RUNS_ON_PUBLISH.
+    runs-on: ubuntu-latest
     permissions:
       contents: read
       packages: write
+      id-token: write
+      attestations: write
     steps:
       - name: Check out repository
         uses: actions/checkout@v4
@@ -251,6 +355,7 @@ jobs:
           esac
 
       - name: Build and push nginx image
+        id: build
         uses: docker/build-push-action@v6
         with:
           context: nginx
@@ -262,6 +367,99 @@ jobs:
             org.opencontainers.image.source=https://github.com/${{ github.repository }}
             org.opencontainers.image.version=${{ needs.version.outputs.kind == 'release' && needs.version.outputs.version || 'main' }}
             org.opencontainers.image.revision=${{ github.sha }}
+
+      # --- signed-images-20261021 ---
+      # Everything below signs what the step `build` just pushed, by DIGEST, from
+      # this GitHub-hosted job: a cosign keyless signature (Sigstore, GitHub OIDC),
+      # a SLSA build-provenance attestation and an SPDX SBOM attestation, both
+      # pushed next to the image. A run that skipped the build (existing release
+      # tag) skips all of it.
+      - name: Resolve the pushed image name and digest
+        id: signref
+        if: steps.build.outcome == 'success'
+        env:
+          METADATA: ${{ steps.build.outputs.metadata }}
+          DIGEST: ${{ steps.build.outputs.digest }}
+        run: |
+          set -euo pipefail
+          python3 - <<'PY'
+          import json, os, re, sys
+          meta = json.loads(os.environ.get("METADATA") or "{}")
+          digest = os.environ.get("DIGEST", "")
+          if not re.fullmatch(r"sha256:[0-9a-f]{64}", digest):
+              sys.exit(f"::error::build step gave no usable digest: {digest!r}")
+          names = [n.strip() for n in meta.get("image.name", "").split(",") if n.strip()]
+          repos, tags = set(), []
+          for n in names:
+              head, _, last = n.rpartition("/")
+              if ":" in last:
+                  last, tag = last.split(":", 1)
+                  tags.append(tag)
+              repos.add(f"{head}/{last}")
+          if len(repos) != 1:
+              sys.exit(f"::error::expected one pushed repository, got {sorted(repos)}")
+          if "latest" in tags:
+              sys.exit("::error::a :latest tag was pushed; beta images must never be tagged latest")
+          repo = repos.pop()
+          if repo != repo.lower() or not repo.startswith("ghcr.io/hugmesh/"):
+              sys.exit(f"::error::unexpected image repository {repo!r}")
+          with open(os.environ["GITHUB_OUTPUT"], "a") as out:
+              out.write(f"repo={repo}\ndigest={digest}\n")
+          print(f"signing {repo}@{digest} (tags: {', '.join(tags)})")
+          PY
+
+      - name: Install cosign
+        if: steps.signref.outcome == 'success'
+        uses: sigstore/cosign-installer@v3
+
+      - name: Sign the image digest (cosign keyless, GitHub OIDC)
+        if: steps.signref.outcome == 'success'
+        env:
+          REF: ${{ steps.signref.outputs.repo }}@${{ steps.signref.outputs.digest }}
+        run: cosign sign --yes "$REF"
+
+      - name: Attest build provenance (pushed to the registry)
+        if: steps.signref.outcome == 'success'
+        uses: actions/attest-build-provenance@v2
+        with:
+          subject-name: ${{ steps.signref.outputs.repo }}
+          subject-digest: ${{ steps.signref.outputs.digest }}
+          push-to-registry: true
+
+      - name: Generate an SPDX SBOM of the pushed digest
+        if: steps.signref.outcome == 'success'
+        uses: anchore/sbom-action@v0
+        with:
+          image: ${{ steps.signref.outputs.repo }}@${{ steps.signref.outputs.digest }}
+          format: spdx-json
+          output-file: ${{ runner.temp }}/sbom.spdx.json
+          upload-artifact: false
+          upload-release-assets: false
+
+      - name: Attest the SBOM (pushed to the registry)
+        if: steps.signref.outcome == 'success'
+        uses: actions/attest-sbom@v2
+        with:
+          subject-name: ${{ steps.signref.outputs.repo }}
+          subject-digest: ${{ steps.signref.outputs.digest }}
+          sbom-path: ${{ runner.temp }}/sbom.spdx.json
+          push-to-registry: true
+
+      - name: Write the verify commands to the job summary
+        if: steps.signref.outcome == 'success'
+        env:
+          REPO_IMAGE: ${{ steps.signref.outputs.repo }}
+          DIGEST: ${{ steps.signref.outputs.digest }}
+        run: |
+          {
+            echo "### Signed image"
+            echo '```'
+            echo "$REPO_IMAGE@$DIGEST"
+            echo "cosign verify $REPO_IMAGE@$DIGEST --certificate-oidc-issuer https://token.actions.githubusercontent.com --certificate-identity-regexp '^https://github.com/$GITHUB_REPOSITORY/.github/workflows/release.yml@refs/(heads/main|tags/v.*)\$'"
+            echo "gh attestation verify oci://$REPO_IMAGE@$DIGEST --repo $GITHUB_REPOSITORY"
+            echo "gh attestation verify oci://$REPO_IMAGE@$DIGEST --repo $GITHUB_REPOSITORY --predicate-type https://spdx.dev/Document/v2.3"
+            echo '```'
+          } >> "$GITHUB_STEP_SUMMARY"
 
   github-release:
     needs: [version, build-sync, build-nginx]
@@ -288,3 +486,34 @@ jobs:
           esac
           notes="Images: ${SYNC_IMAGE}:${VERSION} and ${NGINX_IMAGE}:${VERSION} (also :sha-${SHA12}). Built from ${GITHUB_SHA}."
           gh release create "${tag}" --repo "${GITHUB_REPOSITORY}" "${flags[@]}" --notes "${notes}"
+
+  # --- signed-images-20261021 ---
+  # After the GitHub Release of a v<version> tag run, ask hugmesh.github.io to
+  # rebuild its downloads data (contract: .wf-scripts results downloads/
+  # DISPATCH-CONTRACT.md). The payload is informational; the site re-reads
+  # GitHub itself. Needs the SITE_DISPATCH_TOKEN secret (a token allowed to
+  # write contents on hugmesh/hugmesh.github.io); without it this job prints a
+  # notice and succeeds. Never runs on a push to main.
+  notify-site:
+    needs: [github-release]
+    if: startsWith(github.ref, 'refs/tags/v')
+    runs-on: ubuntu-latest
+    permissions: {}
+    steps:
+      - name: Notify hugmesh.github.io (repository_dispatch releases-updated)
+        env:
+          SITE_DISPATCH_TOKEN: ${{ secrets.SITE_DISPATCH_TOKEN }}
+        run: |
+          set -euo pipefail
+          if [ -z "${SITE_DISPATCH_TOKEN:-}" ]; then
+            echo "::notice::SITE_DISPATCH_TOKEN is not set; skipping the hugmesh.github.io releases-updated notification"
+            exit 0
+          fi
+          payload=$(python3 -c 'import json, os; print(json.dumps({"event_type": "releases-updated", "client_payload": {"source": os.environ["GITHUB_REPOSITORY"], "kind": "image", "version": os.environ["GITHUB_REF_NAME"][1:], "ref": os.environ["GITHUB_REF"], "sha": os.environ["GITHUB_SHA"]}}))')
+          curl -fsS -X POST \
+            -H "Authorization: Bearer $SITE_DISPATCH_TOKEN" \
+            -H "Accept: application/vnd.github+json" \
+            -H "X-GitHub-Api-Version: 2022-11-28" \
+            https://api.github.com/repos/hugmesh/hugmesh.github.io/dispatches \
+            -d "$payload"
+          echo "sent releases-updated for $GITHUB_REPOSITORY $GITHUB_REF_NAME"
