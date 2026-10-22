@@ -6,8 +6,12 @@
 #   * triggers: push to main, push of v* tags, workflow_dispatch; never pull_request,
 #     pull_request_target or workflow_run (this workflow has packages:write and may run on the
 #     self-hosted runner).
-#   * every job uses the one publish runs-on line (RUNS_ON_PUBLISH only for main or a v* tag,
-#     else ubuntu-latest); nothing reads the old RUNS_ON variable.
+#   * version, preflight and github-release use the one publish runs-on line (RUNS_ON_PUBLISH
+#     only for main or a v* tag, else ubuntu-latest); nothing reads the old RUNS_ON variable.
+#   * build-sync and build-nginx (build, push, sign) run on literal ubuntu-latest, never on a
+#     self-hosted runner; each signs its pushed DIGEST with cosign keyless and pushes provenance
+#     and SBOM attestations; only they hold id-token: write and attestations: write.
+#   * notify-site is hosted, has no permissions and runs only for v* tags after the Release.
 #   * no :latest tag anywhere; the image tags come only from the version guard's outputs.
 #   * both image jobs refuse to overwrite a published version; the preflight package read
 #     still gates the sync build; the GitHub Release is prerelease and never latest for a beta.
@@ -82,11 +86,15 @@ for ln in jobs_block:
         jobs[current] = []
     elif current:
         jobs[current].append(ln)
-expected_jobs = {"version", "preflight", "build-sync", "build-nginx", "github-release"}
+expected_jobs = {"version", "preflight", "build-sync", "build-nginx", "github-release", "notify-site"}
 check(f"jobs are {sorted(expected_jobs)}", set(jobs) == expected_jobs)
+HOSTED = {"build-sync", "build-nginx", "notify-site"}
 for name, body in jobs.items():
     runs = [l.strip() for l in body if re.match(r"^    runs-on:", l)]
-    check(f"job {name} uses the publish runs-on line", runs == [PUBLISH_RUNS_ON])
+    if name in HOSTED:
+        check(f"job {name} runs on hosted ubuntu-latest, written literally", runs == ["runs-on: ubuntu-latest"])
+    else:
+        check(f"job {name} uses the publish runs-on line", runs == [PUBLISH_RUNS_ON])
 check("nothing reads vars.RUNS_ON (only RUNS_ON_PUBLISH)",
       re.search(r"vars\.RUNS_ON\b(?!_PUBLISH)", text) is None)
 check("no literal self-hosted label", "self-hosted" not in "\n".join(code(l) for l in lines))
@@ -114,6 +122,23 @@ for name, b in (("build-sync", sync), ("build-nginx", nginx)):
           and "if: needs.version.outputs.kind == 'release'" in b
           and "already exists in GHCR" in b)
     check(f"{name} has packages: write", "packages: write" in b)
+    perms = re.search(r"^    permissions:\n((?:      [a-z-]+: [a-z]+\n)+)", b + "\n", re.M)
+    check(f"{name} permissions are exactly contents read, packages/id-token/attestations write",
+          perms is not None and sorted(perms.group(1).split("\n")[:-1]) == sorted([
+              "      contents: read", "      packages: write", "      id-token: write", "      attestations: write"]))
+    bc = "\n".join(code(l) for l in b.split("\n"))
+    check(f"{name} resolves the digest from its build step, refusing latest and non-sha256",
+          "id: build" in bc and "id: signref" in bc and bc.index("id: build") < bc.index("id: signref")
+          and "DIGEST: ${{ steps.build.outputs.digest }}" in bc
+          and 'sha256:[0-9a-f]{64}' in bc and '"latest" in tags' in bc)
+    after = bc[bc.index("id: signref"):] if "id: signref" in bc else ""
+    check(f"{name} signs the pushed digest with cosign keyless",
+          'run: cosign sign --yes "$REF"' in after
+          and "REF: ${{ steps.signref.outputs.repo }}@${{ steps.signref.outputs.digest }}" in after)
+    check(f"{name} pushes provenance and SBOM attestations for that digest",
+          "uses: actions/attest-build-provenance@" in after and "uses: actions/attest-sbom@" in after
+          and after.count("subject-digest: ${{ steps.signref.outputs.digest }}") == 2
+          and after.count("push-to-registry: true") == 2 and "push-to-registry: false" not in after)
 check("sync build needs the preflight package read",
       re.search(r"needs:\s*\[version,\s*preflight\]", sync) is not None)
 check("nginx build runs after the sync build",
@@ -128,6 +153,16 @@ check("github-release marks a beta prerelease and never latest",
       "--prerelease --latest=false" in rel and "--verify-tag" in rel)
 check("only github-release has contents: write",
       [n for n, b in jobs.items() if "contents: write" in "\n".join(b)] == ["github-release"])
+check("only the two build jobs have id-token or attestations",
+      sorted(n for n, b in jobs.items()
+             if re.search(r"^\s+(id-token|attestations):", "\n".join(code(l) for l in b), re.M))
+      == ["build-nginx", "build-sync"])
+note = "\n".join(code(l) for l in jobs.get("notify-site", []))
+check("notify-site has no permissions and runs only for v* tags after the Release",
+      re.search(r"^    permissions: \{\}$", note, re.M) is not None
+      and re.search(r"^    permissions:\s*$", note, re.M) is None
+      and "if: startsWith(github.ref, 'refs/tags/v')" in note
+      and "needs: [github-release]" in note)
 check("workflow-level permissions are contents: read only",
       re.search(r"^permissions:\n  contents: read\n(?! )", text, re.M) is not None)
 

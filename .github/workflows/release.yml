@@ -23,7 +23,9 @@ name: release
 # There is no pull_request trigger, and there must never be one: this workflow holds
 # packages:write and can run on the self-hosted runner.
 #
-# RUNNER. Every job uses the same runs-on line. It picks the JSON array in the repository
+# RUNNER. build-sync, build-nginx and notify-site run on GitHub-hosted ubuntu-latest, written
+# literally: a published, signed image is never built on a self-hosted runner. version,
+# preflight and github-release use the same runs-on line, which picks the JSON array in the repository
 # variable RUNS_ON_PUBLISH (for example ["self-hosted","Linux","X64"]) ONLY for a non-PR event
 # on refs/heads/main or a v*/studio-v* tag; in every other case, or when RUNS_ON_PUBLISH is
 # unset or empty, it runs on GitHub-hosted ubuntu-latest. Deleting RUNS_ON_PUBLISH is the off
@@ -241,7 +243,7 @@ jobs:
           if len(repos) != 1:
               sys.exit(f"::error::expected one pushed repository, got {sorted(repos)}")
           if "latest" in tags:
-              sys.exit("::error::a :latest tag was pushed; beta images must never be tagged latest")
+              sys.exit("::error::a tag named latest was pushed; beta images must never be tagged latest")
           repo = repos.pop()
           if repo != repo.lower() or not repo.startswith("ghcr.io/hugmesh/"):
               sys.exit(f"::error::unexpected image repository {repo!r}")
@@ -399,7 +401,7 @@ jobs:
           if len(repos) != 1:
               sys.exit(f"::error::expected one pushed repository, got {sorted(repos)}")
           if "latest" in tags:
-              sys.exit("::error::a :latest tag was pushed; beta images must never be tagged latest")
+              sys.exit("::error::a tag named latest was pushed; beta images must never be tagged latest")
           repo = repos.pop()
           if repo != repo.lower() or not repo.startswith("ghcr.io/hugmesh/"):
               sys.exit(f"::error::unexpected image repository {repo!r}")
