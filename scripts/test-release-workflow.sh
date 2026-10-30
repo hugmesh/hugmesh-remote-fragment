@@ -15,6 +15,8 @@
 #   * no :latest tag anywhere; the image tags come only from the version guard's outputs.
 #   * both image jobs refuse to overwrite a published version; the preflight package read
 #     still gates the sync build; the GitHub Release is prerelease and never latest for a beta.
+#   * that refusal step is EXECUTED here under the runner's default `bash -e`, docker stubbed:
+#     image absent -> continues, present -> refuses, any other probe error -> fails closed.
 #
 # Run: bash scripts/test-release-workflow.sh   (WORKFLOW=<path> to check another file)
 set -euo pipefail
@@ -165,6 +167,105 @@ check("notify-site has no permissions and runs only for v* tags after the Releas
       and "needs: [github-release]" in note)
 check("workflow-level permissions are contents: read only",
       re.search(r"^permissions:\n  contents: read\n(?! )", text, re.M) is not None)
+
+# 5. the overwrite refusal EXECUTES correctly under the runner's default shell. A step with no
+#    shell: key runs as `bash -e {0}`, and `set -uo pipefail` does not turn -e off, so a bare
+#    `out=$(probe); rc=$?` ends the step at the probe when the image is absent (every first
+#    publish). Each image job's run block is run here under bash -e with docker stubbed.
+import os
+import subprocess
+import tempfile
+
+
+def run_block(script_text, env_extra, tmp):
+    path = os.path.join(tmp, "step.sh")
+    with open(path, "w", encoding="utf-8") as f:
+        f.write(script_text)
+    env = dict(os.environ)
+    env.update(env_extra)
+    p = subprocess.run(["bash", "--noprofile", "--norc", "-e", path], env=env,
+                       stdout=subprocess.PIPE, stderr=subprocess.STDOUT, text=True, timeout=60)
+    return p.returncode, p.stdout
+
+
+def step_run_block(body, step_name):
+    """The dedented run: | block of the named step in a job's lines, or None."""
+    start = None
+    for i, ln in enumerate(body):
+        if re.match(r"^\s*- name:\s*" + re.escape(step_name) + r"\s*$", ln):
+            start = i
+            break
+    if start is None:
+        return None, None
+    step_indent = len(body[start]) - len(body[start].lstrip())
+    shell_key = None
+    for j in range(start + 1, len(body)):
+        ln = body[j]
+        if ln.strip() and len(ln) - len(ln.lstrip()) <= step_indent:
+            return None, shell_key
+        m = re.match(r"^(\s*)shell:\s*(.*)$", ln)
+        if m:
+            shell_key = m.group(2).strip()
+        m = re.match(r"^(\s*)run:\s*\|\s*$", ln)
+        if m:
+            key_indent = len(m.group(1))
+            out = []
+            for k in range(j + 1, len(body)):
+                b = body[k]
+                if b.strip() and len(b) - len(b.lstrip()) <= key_indent:
+                    break
+                out.append(b)
+            while out and not out[-1].strip():
+                out.pop()
+            ind = min(len(b) - len(b.lstrip()) for b in out if b.strip()) if out else 0
+            return "\n".join(b[ind:] for b in out) + "\n", shell_key
+    return None, shell_key
+
+
+STUB = """#!/bin/sh
+printf '%s\\n' "$*" > "${STUB_MARK}"
+case "${STUB_MODE}" in
+  absent)  echo "ERROR: ${4}: not found"; exit 1 ;;
+  present) echo "Name: ${4}"; echo "MediaType: application/vnd.oci.image.index.v1+json"; exit 0 ;;
+  denied)  echo "ERROR: failed to authorize: denied: denied"; exit 1 ;;
+esac
+echo "stub: unknown STUB_MODE" >&2; exit 99
+"""
+
+with tempfile.TemporaryDirectory(prefix="test-release-wf-") as tmp:
+    rc, _ = run_block("set -uo pipefail\nout=$(false 2>&1)\nrc=$?\necho reached\n", {}, tmp)
+    check("harness canary: the bare $(false); rc=$? form dies under the harness's bash -e", rc != 0)
+
+    bindir = os.path.join(tmp, "bin")
+    os.mkdir(bindir)
+    with open(os.path.join(bindir, "docker"), "w", encoding="utf-8") as f:
+        f.write(STUB)
+    os.chmod(os.path.join(bindir, "docker"), 0o755)
+    mark = os.path.join(tmp, "docker-argv")
+    image, version = "ghcr.io/example/probe-image", "9.9.9-beta.1"
+
+    for name in ("build-sync", "build-nginx"):
+        blk, shell_key = step_run_block(jobs.get(name, []), "Refuse to overwrite a published version")
+        check(f"{name}: overwrite-refusal run block found", bool(blk and blk.strip()))
+        check(f"{name}: overwrite-refusal step runs under the default shell (bash -e)",
+              shell_key in (None, "bash") and not re.search(r"^defaults:", text, re.M))
+        if not blk:
+            continue
+        for mode, want_rc, want, not_want in (
+                ("absent", 0, "is not published yet; continuing.", "::error::"),
+                ("present", 1, "already exists in GHCR", "could not tell"),
+                ("denied", 1, "could not tell whether", "already exists in GHCR")):
+            if os.path.exists(mark):
+                os.remove(mark)
+            rc, out = run_block(blk, {"PATH": bindir + os.pathsep + os.environ.get("PATH", ""),
+                                      "STUB_MODE": mode, "STUB_MARK": mark,
+                                      "IMAGE": image, "VERSION": version}, tmp)
+            argv = open(mark, encoding="utf-8").read().strip() if os.path.exists(mark) else None
+            ok = (rc == want_rc and want in out and not_want not in out
+                  and argv == f"buildx imagetools inspect {image}:{version}")
+            check(f"{name}: under bash -e, image {mode} -> exit {want_rc} with '{want}'", ok)
+            if not ok:
+                print(f"     exit={rc} probe argv={argv!r}\n     " + out.replace("\n", "\n     "))
 
 if failures:
     print(f"\ntest-release-workflow: {failures} failure(s)", file=sys.stderr)
