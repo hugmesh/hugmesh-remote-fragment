@@ -175,8 +175,10 @@ jobs:
         run: |
           set -uo pipefail
           ref="${IMAGE}:${VERSION}"
-          out=$(docker buildx imagetools inspect "${ref}" 2>&1)
-          rc=$?
+          # The step runs under bash -e: a bare failing $(...) would end it before rc is read,
+          # so "not found" (every first publish) would kill the run instead of continuing.
+          rc=0
+          out=$(docker buildx imagetools inspect "${ref}" 2>&1) || rc=$?
           if [ "${rc}" -eq 0 ]; then
             echo "::error::${ref} already exists in GHCR. A published version is never overwritten: raise the -beta.N in pom.xml, merge, and tag the new version."
             exit 1
@@ -339,8 +341,10 @@ jobs:
         run: |
           set -uo pipefail
           ref="${IMAGE}:${VERSION}"
-          out=$(docker buildx imagetools inspect "${ref}" 2>&1)
-          rc=$?
+          # The step runs under bash -e: a bare failing $(...) would end it before rc is read,
+          # so "not found" (every first publish) would kill the run instead of continuing.
+          rc=0
+          out=$(docker buildx imagetools inspect "${ref}" 2>&1) || rc=$?
           if [ "${rc}" -eq 0 ]; then
             echo "::error::${ref} already exists in GHCR. A published version is never overwritten: raise the -beta.N in pom.xml, merge, and tag the new version."
             exit 1
