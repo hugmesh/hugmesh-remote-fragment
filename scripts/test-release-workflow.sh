@@ -3,7 +3,7 @@
 # no YAML library needed (plain python3), so it runs the same on a hosted and a self-hosted runner.
 #
 # What it holds the workflow to:
-#   * triggers: push to main, push of v* tags, workflow_dispatch; never pull_request,
+#   * triggers: push to main and release/**, push of v* tags, workflow_dispatch; never pull_request,
 #     pull_request_target or workflow_run (this workflow has packages:write and may run on the
 #     self-hosted runner).
 #   * version, preflight and github-release use the one publish runs-on line (RUNS_ON_PUBLISH
@@ -12,11 +12,15 @@
 #     self-hosted runner; each signs its pushed DIGEST with cosign keyless and pushes provenance
 #     and SBOM attestations; only they hold id-token: write and attestations: write.
 #   * notify-site is hosted, has no permissions and runs only for v* tags after the Release.
-#   * no :latest tag anywhere; the image tags come only from the version guard's outputs.
+#   * no literal :latest tag anywhere in the workflow; the image tags come only from the version
+#     guard's outputs (the guard alone adds the floating latest tag, for the newest stable line).
 #   * both image jobs refuse to overwrite a published version; the preflight package read
 #     still gates the sync build; the GitHub Release is prerelease and never latest for a beta.
 #   * that refusal step is EXECUTED here under the runner's default `bash -e`, docker stubbed:
-#     image absent -> continues, present -> refuses, any other probe error -> fails closed.
+#     image absent -> continues, present -> refuses (with the beta or the stable message),
+#     any other probe error -> fails closed.
+#   The release-channel behaviour of the other steps (signref, re-check, digest check, GitHub
+#   Release flags) is executed by scripts/test-release-workflow.py.
 #
 # Run: bash scripts/test-release-workflow.sh   (WORKFLOW=<path> to check another file)
 set -euo pipefail
@@ -72,7 +76,8 @@ on_block = "\n".join(code(l) for l in block(r"on:\s*$", 0))
 check("trigger block found", bool(on_block.strip()))
 for bad in ("pull_request", "pull_request_target", "workflow_run", "issue_comment"):
     check(f"no {bad} trigger", re.search(r"\b" + bad + r"\b", on_block) is None)
-check("push to main", re.search(r"branches:\s*\[\s*main\s*\]", on_block) is not None)
+check("push to main and release/**",
+      re.search(r"branches:\s*\[\s*main\s*,\s*'release/\*\*'\s*\]", on_block) is not None)
 check("push of v* tags only", re.search(r"tags:\s*\[\s*'v\*'\s*\]", on_block) is not None)
 check("workflow_dispatch has no inputs (the ref decides)",
       re.search(r"workflow_dispatch:\s*\{\}\s*$", on_block, re.M) is not None)
@@ -103,7 +108,7 @@ check("no literal self-hosted label", "self-hosted" not in "\n".join(code(l) for
 
 # 3. tags: never :latest, and only from the guard
 body_code = "\n".join(code(l) for l in lines)
-check("no :latest tag anywhere", re.search(r":latest\b|'\{0\}:latest'|value=latest", body_code) is None)
+check("no literal :latest tag anywhere", re.search(r":latest\b|'\{0\}:latest'|value=latest", body_code) is None)
 sync = "\n".join(jobs.get("build-sync", []))
 nginx = "\n".join(jobs.get("build-nginx", []))
 check("sync image tags come from the guard",
@@ -115,7 +120,8 @@ check("version job runs the guard for both images",
       ver.count("run: bash scripts/release-version.sh") == 2
       and "IMAGE: ${{ env.SYNC_IMAGE }}" in ver and "IMAGE: ${{ env.NGINX_IMAGE }}" in ver)
 check("version job runs the guard tests",
-      "bash scripts/test-release-version.sh" in ver and "bash scripts/test-release-workflow.sh" in ver)
+      "bash scripts/test-release-version.sh" in ver and "bash scripts/test-release-workflow.sh" in ver
+      and "python3 scripts/test-release-workflow.py" in ver)
 
 # 4. overwrite refusal, preflight, release flags
 for name, b in (("build-sync", sync), ("build-nginx", nginx)):
@@ -251,19 +257,22 @@ with tempfile.TemporaryDirectory(prefix="test-release-wf-") as tmp:
               shell_key in (None, "bash") and not re.search(r"^defaults:", text, re.M))
         if not blk:
             continue
-        for mode, want_rc, want, not_want in (
-                ("absent", 0, "is not published yet; continuing.", "::error::"),
-                ("present", 1, "already exists in GHCR", "could not tell"),
-                ("denied", 1, "could not tell whether", "already exists in GHCR")):
+        for mode, channel, want_rc, want, not_want in (
+                ("absent", "beta", 0, "is not published yet; continuing.", "::error::"),
+                ("absent", "stable", 0, "is not published yet; continuing.", "::error::"),
+                ("present", "beta", 1, "raise the -beta.N", "could not tell"),
+                ("present", "stable", 1, "fix forward with the next patch", "could not tell"),
+                ("denied", "beta", 1, "could not tell whether", "already exists in GHCR")):
             if os.path.exists(mark):
                 os.remove(mark)
             rc, out = run_block(blk, {"PATH": bindir + os.pathsep + os.environ.get("PATH", ""),
-                                      "STUB_MODE": mode, "STUB_MARK": mark,
+                                      "STUB_MODE": mode, "STUB_MARK": mark, "CHANNEL": channel,
                                       "IMAGE": image, "VERSION": version}, tmp)
             argv = open(mark, encoding="utf-8").read().strip() if os.path.exists(mark) else None
             ok = (rc == want_rc and want in out and not_want not in out
+                  and (mode != "present" or "already exists in GHCR" in out)
                   and argv == f"buildx imagetools inspect {image}:{version}")
-            check(f"{name}: under bash -e, image {mode} -> exit {want_rc} with '{want}'", ok)
+            check(f"{name}: under bash -e, {channel} image {mode} -> exit {want_rc} with '{want}'", ok)
             if not ok:
                 print(f"     exit={rc} probe argv={argv!r}\n     " + out.replace("\n", "\n     "))
 
