@@ -183,10 +183,6 @@
 
     <!-- test -->
     <dependency><groupId>org.springframework.boot</groupId><artifactId>spring-boot-starter-test</artifactId><scope>test</scope></dependency>
-    <!-- Test-only: the wire test mints a CA-less self-signed identity and a rogue one to prove the
-         client certificate really crosses the wire (same pins as hugmesh-auth-core). -->
-    <dependency><groupId>org.bouncycastle</groupId><artifactId>bcpkix-jdk18on</artifactId><version>1.84</version><scope>test</scope></dependency>
-    <dependency><groupId>org.bouncycastle</groupId><artifactId>bcprov-jdk18on</artifactId><version>1.84</version><scope>test</scope></dependency>
     <dependency><groupId>io.projectreactor</groupId><artifactId>reactor-test</artifactId><scope>test</scope></dependency>
   </dependencies>
   <build><plugins>

@@ -1,10 +1,8 @@
 package net.hugmesh.fragment.federation;
 
 import org.springframework.core.io.buffer.DataBuffer;
-import org.springframework.http.client.reactive.ReactorClientHttpConnector;
 import org.springframework.web.reactive.function.client.WebClient;
 import org.springframework.web.reactive.function.client.WebClientResponseException;
-import reactor.netty.http.client.HttpClient;
 import reactor.core.publisher.Flux;
 import reactor.core.publisher.Mono;
 import net.hugmesh.fragment.casdoor.CasdoorTokenClient;
@@ -63,26 +61,6 @@ public class FederationSyncClient {
             final CasdoorTokenClient tokenClient) {
         this(WebClient.builder()
                 .baseUrl(federationBaseUrl).build(), tokenClient);
-    }
-
-    /**
-     * Production constructor with an explicit Reactor Netty client, the way the
-     * federation-api call carries its CLIENT CERTIFICATE (federation-api serves TLS with
-     * {@code client-auth=need}). The client comes from
-     * {@code net.hugmesh.fragment.config.OutboundMtlsClient#httpClient()}.
-     *
-     * @param federationBaseUrl base URL of the hugmesh-federation-api service
-     * @param tokenClient       the token client that supplies a cached Casdoor JWT
-     * @param httpClient        the transport (TLS identity included) the calls use
-     */
-    public FederationSyncClient(
-            final String federationBaseUrl,
-            final CasdoorTokenClient tokenClient,
-            final HttpClient httpClient) {
-        this(WebClient.builder()
-                .baseUrl(federationBaseUrl)
-                .clientConnector(new ReactorClientHttpConnector(httpClient))
-                .build(), tokenClient);
     }
 
     /**
