@@ -48,8 +48,10 @@ SHELL := /bin/bash
 # Public images used so this matches CI without bundling a runner image.
 TEMURIN_IMAGE   ?= eclipse-temurin:25-jdk-noble
 DEPCHECK_IMAGE  ?= owasp/dependency-check:latest
-# GraalVM toolchain for `make native`. Same pin as the build:native CI job.
-GRAALVM_IMAGE   ?= ghcr.io/graalvm/graalvm-community:25
+# GraalVM toolchain for `make native`. Same pin as the build:native CI job: GraalVM CE
+# 25.0.2 by digest. Newer GraalVM 25 Innovation releases compile an unfixed Java4Shell
+# (CVE-2026-114938) Base64 stub into native images; see scripts/native-build.sh.
+GRAALVM_IMAGE   ?= ghcr.io/graalvm/graalvm-community:25@sha256:7eeb80438dcda5edfcc58e804ce919018d2bf40ef61ddbb555936a8ba2a216aa
 # The other two halves of build:native's environment, so `make native` really is
 # the CI invocation rather than merely the same script. Passing GRAALVM_IMAGE
 # alone was not enough: scripts/native-build.sh defaults NATIVE_BUILD_IN_DOCKER

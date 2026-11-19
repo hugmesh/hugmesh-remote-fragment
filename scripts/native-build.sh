@@ -31,7 +31,8 @@
 # Environment:
 #   GRAALVM_HOME / JAVA_HOME  a JDK with bin/native-image (preferred)
 #   GRAALVM_IMAGE             container image used when no local GraalVM exists
-#                             (default ghcr.io/graalvm/graalvm-community:25)
+#                             (default: GraalVM CE 25.0.2, pinned by digest; see
+#                             check_graalvm_java4shell below for why)
 #   NATIVE_BUILD_IN_DOCKER    1 = force the container path, 0 = forbid it
 #   NATIVE_BUILD_M2           host Maven repo to bind into the container. Defaults
 #                             to ~/.m2 when there is no CI_JOB_TOKEN, because
@@ -41,7 +42,7 @@
 #   NATIVE_IMAGE_OPTIONS      passed through to native-image, e.g. "-J-Xmx6g"
 set -euo pipefail
 
-GRAALVM_IMAGE="${GRAALVM_IMAGE:-ghcr.io/graalvm/graalvm-community:25}"
+GRAALVM_IMAGE="${GRAALVM_IMAGE:-ghcr.io/graalvm/graalvm-community:25@sha256:7eeb80438dcda5edfcc58e804ce919018d2bf40ef61ddbb555936a8ba2a216aa}"
 REPO_ROOT="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)"
 BINARY="target/remote-fragment"
 
@@ -242,6 +243,29 @@ export GRAALVM_HOME="$GVM_HOME"
 export PATH="$GVM_HOME/bin:$PATH"
 log "using GraalVM at $GVM_HOME"
 "$GVM_HOME/bin/native-image" --version
+
+# Java4Shell (CVE-2026-114938) reaches native images too. GraalVM's compiler ported
+# HotSpot's AVX-512 Base64 decode stub (oracle/graal 040cfd0a8a, 2026-03-24) and
+# SubstrateVM compiles it into every amd64 native image. The fix, oracle/graal
+# 13a4853144 "GR-79579: Avoid AVX-512 Base64 tail overwrite", is on master only:
+# every GraalVM Community 25 Innovation release through 25.5.5.0.3 still ships the
+# unfixed AMD64Base64DecodeOp. GraalVM CE 25.0.2 predates the port and has no such
+# stub, so its binaries decode Base64 in plain Java. Only toolchains checked to be
+# free of the bug pass. To allow a newer one, confirm it contains GR-79579, then
+# add its GRAALVM_VERSION here.
+check_graalvm_java4shell() {
+  local ver
+  ver="$(sed -n 's/^GRAALVM_VERSION="\(.*\)"$/\1/p' "$1/release" 2>/dev/null || true)"
+  case "$ver" in
+    25.0.2) log "GraalVM $ver: no AVX-512 Base64 decode stub (Java4Shell-safe)" ;;
+    *) die "GraalVM '${ver:-unknown}' at $1 is not on the Java4Shell (CVE-2026-114938)
+       allowlist. GraalVM 25 Innovation releases (25.1 to at least 25.5.5.0.3) compile
+       an unfixed AVX-512 Base64 decode stub into native images. Use the pinned
+       GraalVM CE 25.0.2 (the default GRAALVM_IMAGE), or a release confirmed to contain
+       oracle/graal GR-79579." ;;
+  esac
+}
+check_graalvm_java4shell "$GVM_HOME"
 
 # settings.xml points Maven at the org's GitLab Maven registry for the private
 # net.hugmesh:hugmesh-commons. Only useful where CI_JOB_TOKEN exists; on a dev

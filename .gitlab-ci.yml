@@ -164,7 +164,10 @@ build:native:
   timeout: 45m
   rules: *verify_rules
   variables:
-    GRAALVM_IMAGE: "ghcr.io/graalvm/graalvm-community:25"
+    # GraalVM CE 25.0.2 by digest: newer GraalVM 25 Innovation releases compile an
+    # unfixed Java4Shell (CVE-2026-114938) Base64 stub into native images.
+    # scripts/native-build.sh refuses any other version.
+    GRAALVM_IMAGE: "ghcr.io/graalvm/graalvm-community:25@sha256:7eeb80438dcda5edfcc58e804ce919018d2bf40ef61ddbb555936a8ba2a216aa"
     # Force the container path even if a runner happens to have GraalVM on PATH,
     # so every pipeline compiles against the same pinned toolchain.
     NATIVE_BUILD_IN_DOCKER: "1"
