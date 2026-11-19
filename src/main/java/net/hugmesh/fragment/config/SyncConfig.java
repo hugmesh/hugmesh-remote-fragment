@@ -3,7 +3,6 @@ package net.hugmesh.fragment.config;
 import org.springframework.beans.factory.annotation.Value;
 import org.springframework.context.ApplicationContext;
 import org.springframework.context.annotation.Bean;
-import org.springframework.boot.context.properties.EnableConfigurationProperties;
 import org.springframework.context.annotation.Configuration;
 import net.hugmesh.fragment.casdoor.CasdoorTokenClient;
 import net.hugmesh.fragment.federation.FederationSyncClient;
@@ -46,7 +45,6 @@ import java.time.Duration;
  * </ul>
  */
 @Configuration
-@EnableConfigurationProperties(OutboundMtlsClient.class)
 public class SyncConfig {
 
     /**
@@ -91,10 +89,8 @@ public class SyncConfig {
                 + "http://hugmesh-federation-api"
                 + ".hugmesh-backend.svc.cluster.local:8080}")
             final String baseUrl,
-            final CasdoorTokenClient tokens,
-            final OutboundMtlsClient mtls) {
-        // The federation call is the only mTLS peer; the Casdoor token call stays plain.
-        return new FederationSyncClient(baseUrl, tokens, mtls.httpClient());
+            final CasdoorTokenClient tokens) {
+        return new FederationSyncClient(baseUrl, tokens);
     }
 
     /**
