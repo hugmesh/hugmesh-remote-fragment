@@ -83,7 +83,6 @@ env:
   REGISTRY: ghcr.io
   SYNC_IMAGE: ghcr.io/hugmesh/hugmesh-remote-fragment
   NGINX_IMAGE: ghcr.io/hugmesh/hugmesh-remote-fragment/nginx
-  NATIVE_IMAGE: ghcr.io/hugmesh/hugmesh-remote-fragment/native
 
 jobs:
   version:
@@ -94,7 +93,6 @@ jobs:
       sha12: ${{ steps.sync.outputs.sha12 }}
       sync_tags: ${{ steps.sync.outputs.tags }}
       nginx_tags: ${{ steps.nginx.outputs.tags }}
-      native_tags: ${{ steps.native.outputs.tags }}
       channel: ${{ steps.sync.outputs.channel }}
       latest: ${{ steps.sync.outputs.latest }}
     steps:
@@ -127,30 +125,19 @@ jobs:
           IMAGE: ${{ env.NGINX_IMAGE }}
         run: bash scripts/release-version.sh
 
-      - name: Version guard, native image
-        id: native
-        env:
-          IMAGE: ${{ env.NATIVE_IMAGE }}
-        run: bash scripts/release-version.sh
-
       # Both guard runs read the same ref, commit, pom and tags, so everything but the tag list
       # must agree; the jobs below take channel and latest from the sync run.
       - name: The two guard runs agree
         env:
           SYNC: ${{ steps.sync.outputs.kind }} ${{ steps.sync.outputs.version }} ${{ steps.sync.outputs.channel }} ${{ steps.sync.outputs.latest }}
           NGINX: ${{ steps.nginx.outputs.kind }} ${{ steps.nginx.outputs.version }} ${{ steps.nginx.outputs.channel }} ${{ steps.nginx.outputs.latest }}
-          NATIVE: ${{ steps.native.outputs.kind }} ${{ steps.native.outputs.version }} ${{ steps.native.outputs.channel }} ${{ steps.native.outputs.latest }}
         run: |
           set -euo pipefail
           if [ "${SYNC}" != "${NGINX}" ]; then
             echo "::error::the version guard answered '${SYNC}' for the sync image but '${NGINX}' for the nginx image (kind version channel latest). Nothing is published."
             exit 1
           fi
-          if [ "${SYNC}" != "${NATIVE}" ]; then
-            echo "::error::the version guard answered '${SYNC}' for the sync image but '${NATIVE}' for the native image (kind version channel latest). Nothing is published."
-            exit 1
-          fi
-          echo "  all images: ${SYNC}"
+          echo "  both images: ${SYNC}"
 
   preflight:
     needs: version
@@ -451,275 +438,6 @@ jobs:
           REPO_IMAGE: ${{ steps.signref.outputs.repo }}
           DIGEST: ${{ steps.signref.outputs.digest }}
           TAGS: ${{ needs.version.outputs.sync_tags }}
-        run: |
-          {
-            echo "### Signed image"
-            echo "Every tag below names this one signed, attested digest: ${TAGS}"
-            echo '```'
-            echo "$REPO_IMAGE@$DIGEST"
-            echo "cosign verify $REPO_IMAGE@$DIGEST --certificate-oidc-issuer https://token.actions.githubusercontent.com --certificate-identity-regexp '^https://github.com/$GITHUB_REPOSITORY/.github/workflows/release.yml@refs/(heads/main|heads/release/.*|tags/v.*)\$'"
-            echo "gh attestation verify oci://$REPO_IMAGE@$DIGEST --repo $GITHUB_REPOSITORY"
-            echo "gh attestation verify oci://$REPO_IMAGE@$DIGEST --repo $GITHUB_REPOSITORY --predicate-type https://spdx.dev/Document/v2.3"
-            echo '```'
-          } >> "$GITHUB_STEP_SUMMARY"
-
-  build-native:
-    # GraalVM native build of the sync sidecar (Dockerfile.native), published next to the JVM
-    # image as an extra artifact; deployments still run the JVM image. github-release does not
-    # wait for it, so a native build failure never blocks a release of the JVM images.
-    needs: [version, build-sync]
-    # Signed publish job: always a GitHub-hosted runner. Nothing built on a
-    # self-hosted runner (the operator's own host) may be published, so this
-    # job deliberately does not use RUNS_ON_PUBLISH.
-    runs-on: ubuntu-latest
-    permissions:
-      contents: read
-      packages: write
-      id-token: write
-      attestations: write
-    steps:
-      # fetch-depth: 0 for "Re-check the floating tags against origin", which runs the version
-      # guard again.
-      - name: Check out repository
-        uses: actions/checkout@v4
-        with:
-          fetch-depth: 0
-
-      - name: Log in to GHCR
-        uses: docker/login-action@v3
-        with:
-          registry: ${{ env.REGISTRY }}
-          username: ${{ github.actor }}
-          password: ${{ secrets.GITHUB_TOKEN }}
-
-      - name: Set up Docker Buildx
-        uses: docker/setup-buildx-action@v3
-
-      # A published version is immutable. Only "not found" lets a release run continue; any
-      # other answer (the tag exists, or the registry could not be asked) stops it, so a
-      # failed lookup can never turn into an overwrite.
-      - name: Refuse to overwrite a published version
-        if: needs.version.outputs.kind == 'release'
-        env:
-          IMAGE: ${{ env.NATIVE_IMAGE }}
-          VERSION: ${{ needs.version.outputs.version }}
-          CHANNEL: ${{ needs.version.outputs.channel }}
-        run: |
-          set -uo pipefail
-          # Only the exact version is immutable. The floating :beta, :X.Y and latest tags are
-          # meant to move, so they are never checked here.
-          ref="${IMAGE}:${VERSION}"
-          # The step runs under bash -e: a bare failing $(...) would end it before rc is read,
-          # so "not found" (every first publish) would kill the run instead of continuing.
-          rc=0
-          out=$(docker buildx imagetools inspect "${ref}" 2>&1) || rc=$?
-          if [ "${rc}" -eq 0 ]; then
-            if [ "${CHANNEL}" = "stable" ]; then
-              echo "::error::${ref} already exists in GHCR. A published version is never overwritten: fix forward with the next patch (raise X.Y.Z on release/X.Y), merge, and tag the new version."
-            else
-              echo "::error::${ref} already exists in GHCR. A published version is never overwritten: raise the -beta.N in pom.xml, merge, and tag the new version."
-            fi
-            exit 1
-          fi
-          case "${out}" in
-            *"not found"*|*"manifest unknown"*|*"MANIFEST_UNKNOWN"*|*"name unknown"*|*"NAME_UNKNOWN"*)
-              echo "  ${ref} is not published yet; continuing."
-              ;;
-            *)
-              printf '%s\n' "${out}"
-              echo "::error::could not tell whether ${ref} exists (exit ${rc}, output above). Refusing to push rather than risk overwriting it. If ${IMAGE} has never been pushed at all, GHCR may answer 'denied' instead of 'not found': let the main build run first (merge to main, or a manual run on main) so the package exists, then re-run this tag."
-              exit 1
-              ;;
-          esac
-
-      # :X.Y and latest depend on which stable tags exist, and the version job's answer can be
-      # old: "Re-run failed jobs" reuses it however much later that happens. Without this check,
-      # re-running v0.3.0 after v0.4.0 published would move latest back to 0.3.0. Ask the same
-      # guard again from the tags on origin now, the last thing before the build. Any difference
-      # stops the run with nothing pushed, and a "Re-run all jobs" decides afresh. The build
-      # itself still takes minutes, and a registry has no compare-and-swap, so a tag pushed in
-      # that window is not seen here.
-      - name: Re-check the floating tags against origin
-        if: needs.version.outputs.kind == 'release'
-        env:
-          IMAGE: ${{ env.NATIVE_IMAGE }}
-          WANT_TAGS: ${{ needs.version.outputs.native_tags }}
-          WANT_LATEST: ${{ needs.version.outputs.latest }}
-        run: |
-          set -euo pipefail
-          git fetch --quiet --force --prune origin '+refs/heads/*:refs/remotes/origin/*' '+refs/tags/*:refs/tags/*'
-          rc=0
-          fresh="$(GITHUB_OUTPUT='' bash scripts/release-version.sh 2>&1)" || rc=$?
-          if [ "${rc}" -ne 0 ]; then
-            printf '%s\n' "${fresh}"
-            echo "::error::the version guard accepted this release earlier and refuses it now (output above). Nothing was pushed."
-            exit 1
-          fi
-          got_tags=""
-          got_latest=""
-          while IFS= read -r line; do
-            case "${line}" in
-              tags=*) got_tags="${line#tags=}" ;;
-              latest=*) got_latest="${line#latest=}" ;;
-            esac
-          done <<< "${fresh}"
-          if [ "${got_tags}" != "${WANT_TAGS}" ] || [ "${got_latest}" != "${WANT_LATEST}" ]; then
-            echo "::error::the version job chose tags ${WANT_TAGS} (latest=${WANT_LATEST}), but the tags on origin now give ${got_tags} (latest=${got_latest}). Nothing was pushed. Use 'Re-run all jobs', not 'Re-run failed jobs', so the version job decides again."
-            exit 1
-          fi
-          echo "  floating tags still correct: ${got_tags} (latest=${got_latest})"
-
-      - name: Build and push native sync sidecar image
-        id: build
-        uses: docker/build-push-action@v6
-        with:
-          context: .
-          file: Dockerfile.native
-          push: true
-          pull: true
-          tags: ${{ needs.version.outputs.native_tags }}
-          labels: |
-            org.opencontainers.image.source=https://github.com/${{ github.repository }}
-            org.opencontainers.image.version=${{ needs.version.outputs.kind == 'release' && needs.version.outputs.version || github.ref_name }}
-            org.opencontainers.image.revision=${{ github.sha }}
-          build-args: |
-            UPSTREAM_PACKAGES_ACTOR=${{ secrets.PACKAGES_READ_ACTOR || github.actor }}
-          # BuildKit secret (never an ARG/ENV): selects .github/maven-ci-settings.xml, i.e.
-          # the net.hugmesh libraries come from GitHub Packages. See the Dockerfile.
-          secrets: |
-            packages_read_token=${{ secrets.PACKAGES_READ_TOKEN }}
-
-      # --- signed-images-20261021 ---
-      # Everything below signs what the step `build` just pushed, by DIGEST, from
-      # this GitHub-hosted job: a cosign keyless signature (Sigstore, GitHub OIDC),
-      # a SLSA build-provenance attestation and an SPDX SBOM attestation, both
-      # pushed next to the image. A run that skipped the build (existing release
-      # tag) skips all of it.
-      - name: Resolve the pushed image name and digest
-        id: signref
-        if: steps.build.outcome == 'success'
-        env:
-          METADATA: ${{ steps.build.outputs.metadata }}
-          DIGEST: ${{ steps.build.outputs.digest }}
-          VERSION: ${{ needs.version.outputs.version }}
-          CHANNEL: ${{ needs.version.outputs.channel }}
-          EXPECTED_TAGS: ${{ needs.version.outputs.native_tags }}
-        run: |
-          set -euo pipefail
-          python3 - <<'PY'
-          import json, os, re, sys
-          meta = json.loads(os.environ.get("METADATA") or "{}")
-          digest = os.environ.get("DIGEST", "")
-          if not re.fullmatch(r"sha256:[0-9a-f]{64}", digest):
-              sys.exit(f"::error::build step gave no usable digest: {digest!r}")
-          names = [n.strip() for n in meta.get("image.name", "").split(",") if n.strip()]
-          repos, tags = set(), []
-          for n in names:
-              head, _, last = n.rpartition("/")
-              if ":" in last:
-                  last, tag = last.split(":", 1)
-                  tags.append(tag)
-              repos.add(f"{head}/{last}")
-          if len(repos) != 1:
-              sys.exit(f"::error::expected one pushed repository, got {sorted(repos)}")
-          # Signing and both attestations are by DIGEST, so they cover every tag that names
-          # this digest. Prove the pushed tags are exactly the ones the version guard chose:
-          # nothing more was pushed unsigned, nothing less was signed.
-          expected = sorted(t.rpartition(":")[2] for t in os.environ.get("EXPECTED_TAGS", "").split(",") if t.strip())
-          if sorted(tags) != expected:
-              sys.exit(f"::error::pushed tags {sorted(tags)} are not the guard's tags {expected}")
-          channel = os.environ.get("CHANNEL", "")
-          # A missing VERSION reads as a prerelease ("-"), and so does an empty one (a job
-          # output that was never set arrives as ""), so this fails closed.
-          if "latest" in tags and "-" in (os.environ.get("VERSION") or "-"):
-              sys.exit("::error::a tag named latest was pushed; beta images must never be tagged latest")
-          if "latest" in tags and channel != "stable":
-              sys.exit("::error::a tag named latest was pushed outside the stable channel")
-          if "beta" in tags and channel != "beta":
-              sys.exit("::error::a tag named beta was pushed outside the beta channel")
-          if channel != "stable" and any(re.fullmatch(r"[0-9]+\.[0-9]+", t) for t in tags):
-              sys.exit("::error::a floating X.Y tag was pushed outside the stable channel")
-          repo = repos.pop()
-          if repo != repo.lower() or not repo.startswith("ghcr.io/hugmesh/"):
-              sys.exit(f"::error::unexpected image repository {repo!r}")
-          with open(os.environ["GITHUB_OUTPUT"], "a") as out:
-              out.write(f"repo={repo}\ndigest={digest}\n")
-          print(f"signing {repo}@{digest}; it covers every pushed tag: {', '.join(sorted(tags))}")
-          PY
-
-      - name: Install cosign
-        if: steps.signref.outcome == 'success'
-        uses: sigstore/cosign-installer@v3
-
-      - name: Sign the image digest (cosign keyless, GitHub OIDC)
-        if: steps.signref.outcome == 'success'
-        env:
-          REF: ${{ steps.signref.outputs.repo }}@${{ steps.signref.outputs.digest }}
-        run: cosign sign --yes "$REF"
-
-      - name: Attest build provenance (pushed to the registry)
-        if: steps.signref.outcome == 'success'
-        uses: actions/attest-build-provenance@v2
-        with:
-          subject-name: ${{ steps.signref.outputs.repo }}
-          subject-digest: ${{ steps.signref.outputs.digest }}
-          push-to-registry: true
-
-      - name: Generate an SPDX SBOM of the pushed digest
-        if: steps.signref.outcome == 'success'
-        uses: anchore/sbom-action@v0
-        with:
-          image: ${{ steps.signref.outputs.repo }}@${{ steps.signref.outputs.digest }}
-          format: spdx-json
-          output-file: ${{ runner.temp }}/sbom.spdx.json
-          upload-artifact: false
-          upload-release-assets: false
-
-      - name: Attest the SBOM (pushed to the registry)
-        if: steps.signref.outcome == 'success'
-        uses: actions/attest-sbom@v2
-        with:
-          subject-name: ${{ steps.signref.outputs.repo }}
-          subject-digest: ${{ steps.signref.outputs.digest }}
-          sbom-path: ${{ runner.temp }}/sbom.spdx.json
-          push-to-registry: true
-
-      # cosign and the attestations bind to the digest, so they cover every tag that resolves
-      # to it. Prove each pushed tag does (a floating tag moved by a concurrent run would not).
-      - name: Check every pushed tag resolves to the signed digest
-        if: steps.signref.outcome == 'success'
-        env:
-          TAGS: ${{ needs.version.outputs.native_tags }}
-          DIGEST: ${{ steps.signref.outputs.digest }}
-        run: |
-          set -euo pipefail
-          IFS=',' read -r -a refs <<< "${TAGS}"
-          if [ "${#refs[@]}" -eq 0 ]; then
-            echo "::error::no pushed tags to check"
-            exit 1
-          fi
-          for ref in "${refs[@]}"; do
-            # A digest is the sha256 of the manifest's exact bytes, which --raw prints. Do not
-            # use --format '{{.Manifest.Digest}}': buildx answers any format that starts with
-            # {{.Manifest with its full listing.
-            if ! raw_sha="$(docker buildx imagetools inspect "${ref}" --raw | sha256sum)"; then
-              echo "::error::could not read ${ref} from the registry"
-              exit 1
-            fi
-            got="sha256:${raw_sha%% *}"
-            if [ "${got}" != "${DIGEST}" ]; then
-              echo "::error::${ref} resolves to ${got}, not the signed digest ${DIGEST}"
-              exit 1
-            fi
-            echo "  ${ref} -> ${DIGEST} (signed)"
-          done
-
-      - name: Write the verify commands to the job summary
-        if: steps.signref.outcome == 'success'
-        env:
-          REPO_IMAGE: ${{ steps.signref.outputs.repo }}
-          DIGEST: ${{ steps.signref.outputs.digest }}
-          TAGS: ${{ needs.version.outputs.native_tags }}
         run: |
           {
             echo "### Signed image"

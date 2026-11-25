@@ -93,9 +93,9 @@ for ln in jobs_block:
         jobs[current] = []
     elif current:
         jobs[current].append(ln)
-expected_jobs = {"version", "preflight", "build-sync", "build-nginx", "build-native", "github-release", "notify-site"}
+expected_jobs = {"version", "preflight", "build-sync", "build-nginx", "github-release", "notify-site"}
 check(f"jobs are {sorted(expected_jobs)}", set(jobs) == expected_jobs)
-HOSTED = {"build-sync", "build-nginx", "build-native", "notify-site"}
+HOSTED = {"build-sync", "build-nginx", "notify-site"}
 for name, body in jobs.items():
     runs = [l.strip() for l in body if re.match(r"^    runs-on:", l)]
     if name in HOSTED:
@@ -113,20 +113,12 @@ sync = "\n".join(jobs.get("build-sync", []))
 nginx = "\n".join(jobs.get("build-nginx", []))
 check("sync image tags come from the guard",
       re.search(r"tags:\s*\$\{\{\s*needs\.version\.outputs\.sync_tags\s*\}\}", sync) is not None)
-native = "\n".join(jobs.get("build-native", []))
-check("native image builds Dockerfile.native with the native tags, after the sync build",
-      re.search(r"^\s+file: Dockerfile\.native$", native, re.M) is not None
-      and re.search(r"tags:\s*\$\{\{\s*needs\.version\.outputs\.native_tags\s*\}\}", native) is not None
-      and re.search(r"needs:\s*\[version,\s*build-sync\]", native) is not None)
-check("github-release does not wait for the native build",
-      "build-native" not in "\n".join(jobs.get("github-release", [])))
 check("nginx image tags come from the guard",
       re.search(r"tags:\s*\$\{\{\s*needs\.version\.outputs\.nginx_tags\s*\}\}", nginx) is not None)
 ver = "\n".join(jobs.get("version", []))
-check("version job runs the guard for all three images",
-      ver.count("run: bash scripts/release-version.sh") == 3
-      and "IMAGE: ${{ env.SYNC_IMAGE }}" in ver and "IMAGE: ${{ env.NGINX_IMAGE }}" in ver
-      and "IMAGE: ${{ env.NATIVE_IMAGE }}" in ver)
+check("version job runs the guard for both images",
+      ver.count("run: bash scripts/release-version.sh") == 2
+      and "IMAGE: ${{ env.SYNC_IMAGE }}" in ver and "IMAGE: ${{ env.NGINX_IMAGE }}" in ver)
 check("version job runs the guard tests",
       "bash scripts/test-release-version.sh" in ver and "bash scripts/test-release-workflow.sh" in ver
       and "python3 scripts/test-release-workflow.py" in ver)
@@ -169,10 +161,10 @@ check("github-release marks a beta prerelease and never latest",
       "--prerelease --latest=false" in rel and "--verify-tag" in rel)
 check("only github-release has contents: write",
       [n for n, b in jobs.items() if "contents: write" in "\n".join(b)] == ["github-release"])
-check("only the three build jobs have id-token or attestations",
+check("only the two build jobs have id-token or attestations",
       sorted(n for n, b in jobs.items()
              if re.search(r"^\s+(id-token|attestations):", "\n".join(code(l) for l in b), re.M))
-      == ["build-native", "build-nginx", "build-sync"])
+      == ["build-nginx", "build-sync"])
 note = "\n".join(code(l) for l in jobs.get("notify-site", []))
 check("notify-site has no permissions and runs only for v* tags after the Release",
       re.search(r"^    permissions: \{\}$", note, re.M) is not None
