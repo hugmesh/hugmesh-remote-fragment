@@ -21,7 +21,6 @@ ROOT = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
 WF = open(os.path.join(ROOT, ".github", "workflows", "release.yml"), encoding="utf-8").read()
 SYNC_IMG = "ghcr.io/hugmesh/hugmesh-remote-fragment"
 NGINX_IMG = "ghcr.io/hugmesh/hugmesh-remote-fragment/nginx"
-NATIVE_IMG = "ghcr.io/hugmesh/hugmesh-remote-fragment/native"
 REPOSITORY = "hugmesh/hugmesh-remote-fragment"
 FAILURES = 0
 
@@ -97,15 +96,13 @@ m = re.search(r"^env:\n((?:  [A-Z_]+: .*\n)+)", WF, re.M)
 for line in (m.group(1).splitlines() if m else []):
     k, _, v = line.strip().partition(": ")
     WF_ENV[k] = v
-check("workflow env names all three images", WF_ENV.get("SYNC_IMAGE") == SYNC_IMG and WF_ENV.get("NGINX_IMAGE") == NGINX_IMG
-      and WF_ENV.get("NATIVE_IMAGE") == NATIVE_IMG,
+check("workflow env names both images", WF_ENV.get("SYNC_IMAGE") == SYNC_IMG and WF_ENV.get("NGINX_IMAGE") == NGINX_IMG,
       str(WF_ENV))
 RUNNER = ("GITHUB_REF", "GITHUB_SHA", "GITHUB_REF_NAME", "GITHUB_REPOSITORY", "GITHUB_OUTPUT")
 STUBS = ("STUB_LOG", "STUB_REGISTRY", "STUB_RELEASE_EXISTS")
 
 JOBS = {"build-sync": (SYNC_IMG, "sync_tags", "Build and push sync sidecar image"),
-        "build-nginx": (NGINX_IMG, "nginx_tags", "Build and push nginx image"),
-        "build-native": (NATIVE_IMG, "native_tags", "Build and push native sync sidecar image")}
+        "build-nginx": (NGINX_IMG, "nginx_tags", "Build and push nginx image")}
 
 # ── the signref python, exactly as the workflow runs it ───────────────────────────────
 DIGEST = "sha256:" + "a" * 64
@@ -223,9 +220,9 @@ check("the release-channels contract marker is present", "hugmesh-release-channe
 VERSION_JOB = job("version")
 check("version job checks out with fetch-depth: 0",
       re.search(r"uses: actions/checkout@v4\n\s+with:\n\s+fetch-depth: 0\n", VERSION_JOB) is not None)
-check("version job runs the guard tests, this test and the guard for all three images",
+check("version job runs the guard tests, this test and the guard for both images",
       "bash scripts/test-release-version.sh" in VERSION_JOB and "python3 scripts/test-release-workflow.py" in VERSION_JOB
-      and VERSION_JOB.count("run: bash scripts/release-version.sh") == 3)
+      and VERSION_JOB.count("run: bash scripts/release-version.sh") == 2)
 for out in ("channel", "latest"):
     check(f"version job exports {out}", f"{out}: ${{{{ steps.sync.outputs.{out} }}}}" in VERSION_JOB)
 agree = step_block(VERSION_JOB, "- name: The two guard runs agree")
